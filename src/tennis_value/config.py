@@ -95,6 +95,20 @@ class EloConfig(FrozenModel):
     elo_scale: float = Field(default=400.0, gt=0, allow_inf_nan=False)
 
 
+class RollingFeatureConfig(FrozenModel):
+    """Configurable chronological rolling feature parameters."""
+
+    rolling_window: int = Field(default=10, gt=0)
+    schedule_window_days: int = Field(default=14, gt=0)
+    neutral_win_rate: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
+
+
+class FeatureConfig(FrozenModel):
+    """Configuration for the model-ready feature dataset."""
+
+    rolling: RollingFeatureConfig = Field(default_factory=RollingFeatureConfig)
+
+
 class DataSeasonConfig(FrozenModel):
     """Supported data season boundaries."""
 
@@ -187,6 +201,7 @@ class AppConfig(FrozenModel):
     paths: PipelinePaths = Field(default_factory=PipelinePaths)
     data_seasons: DataSeasonConfig = Field(default_factory=DataSeasonConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
+    features: FeatureConfig = Field(default_factory=FeatureConfig)
     date_splits: DateSplitConfig = Field(default_factory=DateSplitConfig)
     value_thresholds: ValueThresholds = Field(default_factory=ValueThresholds)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
@@ -209,7 +224,9 @@ __all__ = [
     "DataSeasonConfig",
     "DateSplitConfig",
     "EloConfig",
+    "FeatureConfig",
     "PipelinePaths",
+    "RollingFeatureConfig",
     "SupportedSurface",
     "ValueThresholds",
 ]

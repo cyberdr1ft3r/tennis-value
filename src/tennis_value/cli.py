@@ -11,8 +11,9 @@ from rich.console import Console
 
 from tennis_value import __version__
 from tennis_value.cleaning import clean_matches, write_cleaning_outputs
-from tennis_value.config import EloConfig
+from tennis_value.config import EloConfig, FeatureConfig
 from tennis_value.elo import add_elo_features_with_report, write_elo_outputs
+from tennis_value.features import build_features_with_report, write_feature_outputs
 from tennis_value.ingest import IngestionFailure, ingest_tennis_data, write_ingestion_outputs
 
 app = typer.Typer(help="Tennis Value research tooling.")
@@ -27,6 +28,9 @@ DEFAULT_CLEAN_REJECTED = Path("reports/rejected_rows.csv")
 DEFAULT_ELO_INPUT = Path("data/processed/matches.parquet")
 DEFAULT_ELO_OUTPUT = Path("data/processed/matches_with_elo.parquet")
 DEFAULT_ELO_REPORT = Path("reports/elo_quality.json")
+DEFAULT_FEATURE_INPUT = Path("data/processed/matches_with_elo.parquet")
+DEFAULT_FEATURE_OUTPUT = Path("data/processed/features.parquet")
+DEFAULT_FEATURE_REPORT = Path("reports/feature_quality.json")
 
 
 @app.callback()
@@ -154,6 +158,42 @@ def build_elo(
         "Built Elo for "
         f"{result.report.rows_returned} row(s), "
         f"{result.report.eligible_updates} eligible update(s) -> {output}"
+    )
+    console.print(f"Report -> {report}")
+
+
+@app.command("build-features")
+def build_features(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to the Elo-enriched matches Parquet dataset."),
+    ] = DEFAULT_FEATURE_INPUT,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Path for the model-ready feature Parquet output."),
+    ] = DEFAULT_FEATURE_OUTPUT,
+    report: Annotated[
+        Path,
+        typer.Option("--report", help="Path for the feature quality report JSON output."),
+    ] = DEFAULT_FEATURE_REPORT,
+) -> None:
+    """Build rolling and static model-ready match features."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    matches = pd.read_parquet(input)
+    try:
+        result = build_features_with_report(matches, FeatureConfig())
+    except ValueError as exc:
+        console.print(f"[red]Feature generation failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    write_feature_outputs(result, output, report)
+    console.print(
+        "Built features for "
+        f"{result.report.rows_returned} row(s), "
+        f"{result.report.eligible_history_updates} eligible history update(s) -> {output}"
     )
     console.print(f"Report -> {report}")
 

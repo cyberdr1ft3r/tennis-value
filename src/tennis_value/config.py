@@ -90,9 +90,9 @@ class PipelinePaths(FrozenModel):
 class EloConfig(FrozenModel):
     """Configurable Elo parameters."""
 
-    initial_rating: float = Field(default=1500.0, gt=0)
-    k_factor: float = Field(default=32.0, gt=0)
-    elo_scale: float = Field(default=400.0, gt=0)
+    initial_rating: float = Field(default=1500.0, gt=0, allow_inf_nan=False)
+    k_factor: float = Field(default=32.0, gt=0, allow_inf_nan=False)
+    elo_scale: float = Field(default=400.0, gt=0, allow_inf_nan=False)
 
 
 class DataSeasonConfig(FrozenModel):

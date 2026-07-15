@@ -11,6 +11,8 @@ from rich.console import Console
 
 from tennis_value import __version__
 from tennis_value.cleaning import clean_matches, write_cleaning_outputs
+from tennis_value.config import EloConfig
+from tennis_value.elo import add_elo_features_with_report, write_elo_outputs
 from tennis_value.ingest import IngestionFailure, ingest_tennis_data, write_ingestion_outputs
 
 app = typer.Typer(help="Tennis Value research tooling.")
@@ -22,6 +24,9 @@ DEFAULT_CLEAN_INPUT = Path("data/processed/raw_matches.parquet")
 DEFAULT_CLEAN_OUTPUT = Path("data/processed/matches.parquet")
 DEFAULT_CLEAN_REPORT = Path("reports/data_quality.json")
 DEFAULT_CLEAN_REJECTED = Path("reports/rejected_rows.csv")
+DEFAULT_ELO_INPUT = Path("data/processed/matches.parquet")
+DEFAULT_ELO_OUTPUT = Path("data/processed/matches_with_elo.parquet")
+DEFAULT_ELO_REPORT = Path("reports/elo_quality.json")
 
 
 @app.callback()
@@ -115,6 +120,42 @@ def clean(
     )
     console.print(f"Report -> {report}")
     console.print(f"Rejected rows -> {rejected}")
+
+
+@app.command("build-elo")
+def build_elo(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to the canonical matches Parquet dataset."),
+    ] = DEFAULT_ELO_INPUT,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Path for the Elo-enriched Parquet output."),
+    ] = DEFAULT_ELO_OUTPUT,
+    report: Annotated[
+        Path,
+        typer.Option("--report", help="Path for the Elo quality report JSON output."),
+    ] = DEFAULT_ELO_REPORT,
+) -> None:
+    """Build pre-match overall and surface Elo features."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    matches = pd.read_parquet(input)
+    try:
+        result = add_elo_features_with_report(matches, EloConfig())
+    except ValueError as exc:
+        console.print(f"[red]Elo generation failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    write_elo_outputs(result, output, report)
+    console.print(
+        "Built Elo for "
+        f"{result.report.rows_returned} row(s), "
+        f"{result.report.eligible_updates} eligible update(s) -> {output}"
+    )
+    console.print(f"Report -> {report}")
 
 
 if __name__ == "__main__":

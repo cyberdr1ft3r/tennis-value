@@ -1,0 +1,5 @@
+Date,Tournament,Surface,Round,Best of,Winner,Loser,WRank,LRank,B365W,B365L,AvgW,AvgL,Comment
+2024-01-02,Brisbane,Hard,R32,3,Alex Example,Boris Sample,12,44,1.80,2.05,1.78,2.08,Completed
+03/01/2024,Brisbane,Clay,R16,3,Carlos Demo,Dani Test,NR,88,N/A,N/A,1.65,2.25,Retired
+01/04/2024,Halle,Grass,QF,3,Evan Local,Felix Away,25,-,1.40,,1.42,,Completed
+bad-date,Indoor Cup,Carpet,R32,3,Gary Unknown,Henry Other,55,60,2.10,1.75,2.05,1.80,Completed

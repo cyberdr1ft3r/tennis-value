@@ -14,6 +14,7 @@ authors = [
 dependencies = [
     "joblib",
     "numpy",
+    "openpyxl",
     "pandas",
     "plotly",
     "pyarrow",
@@ -22,6 +23,7 @@ dependencies = [
     "scikit-learn",
     "streamlit",
     "typer",
+    "xlrd",
 ]
 
 [project.optional-dependencies]

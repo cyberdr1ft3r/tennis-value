@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
+import pandas as pd
 import typer
 from rich.console import Console
 
 from tennis_value import __version__
+from tennis_value.cleaning import clean_matches, write_cleaning_outputs
 from tennis_value.ingest import IngestionFailure, ingest_tennis_data, write_ingestion_outputs
 
 app = typer.Typer(help="Tennis Value research tooling.")
@@ -16,6 +18,10 @@ console = Console()
 DEFAULT_INGEST_INPUT = Path("data/raw/tennis_data")
 DEFAULT_INGEST_OUTPUT = Path("data/processed/raw_matches.parquet")
 DEFAULT_INGEST_REPORT = Path("reports/ingestion_report.json")
+DEFAULT_CLEAN_INPUT = Path("data/processed/raw_matches.parquet")
+DEFAULT_CLEAN_OUTPUT = Path("data/processed/matches.parquet")
+DEFAULT_CLEAN_REPORT = Path("reports/data_quality.json")
+DEFAULT_CLEAN_REJECTED = Path("reports/rejected_rows.csv")
 
 
 @app.callback()
@@ -73,6 +79,42 @@ def ingest(
         f"{result.report.rows_returned} row(s) -> {output}"
     )
     console.print(f"Report -> {report}")
+
+
+@app.command()
+def clean(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to the raw ingested Parquet dataset."),
+    ] = DEFAULT_CLEAN_INPUT,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Path for the canonical matches Parquet output."),
+    ] = DEFAULT_CLEAN_OUTPUT,
+    report: Annotated[
+        Path,
+        typer.Option("--report", help="Path for the data-quality report JSON output."),
+    ] = DEFAULT_CLEAN_REPORT,
+    rejected: Annotated[
+        Path,
+        typer.Option("--rejected", help="Path for rejected rows CSV output."),
+    ] = DEFAULT_CLEAN_REJECTED,
+) -> None:
+    """Clean raw ingested rows into canonical matches."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    raw_matches = pd.read_parquet(input)
+    result = clean_matches(raw_matches)
+    write_cleaning_outputs(result, output, report, rejected)
+    console.print(
+        "Accepted "
+        f"{result.quality_report.rows_accepted} / "
+        f"{result.quality_report.rows_received} row(s) -> {output}"
+    )
+    console.print(f"Report -> {report}")
+    console.print(f"Rejected rows -> {rejected}")
 
 
 if __name__ == "__main__":

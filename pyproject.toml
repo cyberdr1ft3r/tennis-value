@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tennis-value"
+version = "0.1.0"
+description = "Local research tooling for ATP tennis value analysis."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Tennis Value" },
+]
+dependencies = [
+    "joblib",
+    "numpy",
+    "pandas",
+    "plotly",
+    "pyarrow",
+    "pydantic",
+    "rich",
+    "scikit-learn",
+    "streamlit",
+    "typer",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy",
+    "pandas-stubs",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.scripts]
+tennis-value = "tennis_value.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["tennis_value"]
+
+[[tool.mypy.overrides]]
+module = [
+    "joblib.*",
+    "plotly.*",
+    "sklearn.*",
+    "streamlit.*",
+]
+ignore_missing_imports = true

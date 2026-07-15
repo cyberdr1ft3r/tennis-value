@@ -21,6 +21,7 @@ def _row(match_id: str, match_date: str, target: bool, value: float) -> dict[str
         "is_retirement": False,
         "overall_elo_diff": value,
         "surface_elo_diff": value / 2,
+        "elo_expected_player_1": max(0.05, min(0.95, 0.5 + value / 100)),
         "log_rank_diff": None if match_id.endswith("3") else value / 10,
         "recent_10_win_rate_diff": value / 100,
         "surface_recent_10_win_rate_diff": value / 100,

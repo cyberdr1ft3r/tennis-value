@@ -36,6 +36,14 @@ DEFAULT_MODEL_OUTPUT = Path("models/model_v1.joblib")
 DEFAULT_METADATA_OUTPUT = Path("models/model_v1_metadata.json")
 DEFAULT_PREDICTIONS_OUTPUT = Path("reports/model_v1_predictions.parquet")
 DEFAULT_TRAINING_SUMMARY_OUTPUT = Path("reports/model_v1_training_summary.json")
+DEFAULT_EVALUATION_PREDICTIONS = Path("reports/model_v1_predictions.parquet")
+DEFAULT_EVALUATION_FEATURES = Path("data/processed/features.parquet")
+DEFAULT_METRICS_OUTPUT = Path("reports/model_v1_metrics.json")
+DEFAULT_COMPARISON_OUTPUT = Path("reports/model_v1_comparison.json")
+DEFAULT_CALIBRATION_OUTPUT = Path("reports/model_v1_calibration.parquet")
+DEFAULT_SURFACE_OUTPUT = Path("reports/model_v1_surface_metrics.parquet")
+DEFAULT_CALIBRATION_PLOT = Path("reports/model_v1_calibration.png")
+DEFAULT_DISTRIBUTION_PLOT = Path("reports/model_v1_probability_distribution.png")
 
 
 @app.callback()
@@ -262,6 +270,125 @@ def train(
     console.print(f"Metadata -> {metadata_output}")
     console.print(f"Predictions -> {predictions_output}")
     console.print(f"Summary -> {summary_output}")
+
+
+@app.command()
+def evaluate(
+    predictions: Annotated[
+        Path,
+        typer.Option("--predictions", help="Path to model prediction Parquet output."),
+    ] = DEFAULT_EVALUATION_PREDICTIONS,
+    features: Annotated[
+        Path | None,
+        typer.Option("--features", help="Optional feature Parquet for Elo baseline join."),
+    ] = DEFAULT_EVALUATION_FEATURES,
+    metrics_output: Annotated[
+        Path,
+        typer.Option("--metrics-output", help="Path for model metrics JSON."),
+    ] = DEFAULT_METRICS_OUTPUT,
+    comparison_output: Annotated[
+        Path,
+        typer.Option("--comparison-output", help="Path for baseline comparison JSON."),
+    ] = DEFAULT_COMPARISON_OUTPUT,
+    calibration_output: Annotated[
+        Path,
+        typer.Option("--calibration-output", help="Path for calibration table Parquet."),
+    ] = DEFAULT_CALIBRATION_OUTPUT,
+    surface_output: Annotated[
+        Path,
+        typer.Option("--surface-output", help="Path for surface metrics Parquet."),
+    ] = DEFAULT_SURFACE_OUTPUT,
+    calibration_plot: Annotated[
+        Path,
+        typer.Option("--calibration-plot", help="Path for calibration PNG."),
+    ] = DEFAULT_CALIBRATION_PLOT,
+    distribution_plot: Annotated[
+        Path,
+        typer.Option("--distribution-plot", help="Path for probability distribution PNG."),
+    ] = DEFAULT_DISTRIBUTION_PLOT,
+) -> None:
+    """Evaluate saved probability predictions."""
+    if not predictions.exists():
+        console.print(f"[red]Predictions file does not exist: {predictions}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.evaluate import (
+        EvaluationOutputPaths,
+        evaluate_predictions,
+        join_elo_baseline,
+        write_evaluation_artifacts,
+    )
+
+    prediction_rows = pd.read_parquet(predictions)
+    should_join_elo = (
+        features is not None
+        and features.exists()
+        and "elo_expected_player_1" not in prediction_rows
+    )
+    if should_join_elo:
+        assert features is not None
+        try:
+            prediction_rows = join_elo_baseline(prediction_rows, pd.read_parquet(features))
+        except ValueError as exc:
+            console.print(f"[red]Elo baseline join failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+    try:
+        model_version = str(prediction_rows["model_version"].iloc[0])
+        result = evaluate_predictions(prediction_rows, model_version=model_version)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]Evaluation failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    output_paths = EvaluationOutputPaths(
+        metrics_output=metrics_output,
+        comparison_output=comparison_output,
+        calibration_output=calibration_output,
+        surface_output=surface_output,
+        calibration_plot=calibration_plot,
+        distribution_plot=distribution_plot,
+    )
+    write_evaluation_artifacts(result, output_paths, predictions=prediction_rows)
+
+    test_metrics = result.metrics_report.get("primary_test_metrics", {})
+    comparison = result.comparison_report
+    elo_test = comparison.get("elo_baseline", {}).get("partitions", {}).get("test", {})
+    bookmaker_test = (
+        comparison.get("bookmaker_no_vig_baseline", {}).get("partitions", {}).get("test", {})
+    )
+    console.print(f"Model version: {model_version}")
+    console.print(f"Test rows: {test_metrics.get('sample_count', 'N/A')}")
+    console.print(f"Test log loss: {_display_metric(test_metrics.get('log_loss'))}")
+    console.print(f"Test Brier score: {_display_metric(test_metrics.get('brier_score'))}")
+    console.print(f"Test accuracy: {_display_metric(test_metrics.get('accuracy'))}")
+    console.print(f"Test ROC AUC: {_display_metric(test_metrics.get('roc_auc'))}")
+    console.print(
+        "Test calibration error: "
+        f"{_display_metric(test_metrics.get('expected_calibration_error'))}"
+    )
+    console.print(
+        "Elo log-loss improvement: "
+        f"{_display_metric(elo_test.get('log_loss_improvement'))}"
+    )
+    console.print(
+        "Bookmaker log-loss improvement: "
+        f"{_display_metric(bookmaker_test.get('log_loss_improvement'))}"
+    )
+    console.print(f"Valid-odds test rows: {bookmaker_test.get('rows_with_valid_odds', 'N/A')}")
+    console.print(f"Metrics -> {metrics_output}")
+    console.print(f"Comparison -> {comparison_output}")
+    console.print(f"Calibration -> {calibration_output}")
+    console.print(f"Surface metrics -> {surface_output}")
+    console.print(f"Calibration plot -> {calibration_plot}")
+    console.print(f"Distribution plot -> {distribution_plot}")
+
+
+def _display_metric(value: object) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.6f}"
+    return str(value)
 
 
 if __name__ == "__main__":

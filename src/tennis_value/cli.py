@@ -31,6 +31,11 @@ DEFAULT_ELO_REPORT = Path("reports/elo_quality.json")
 DEFAULT_FEATURE_INPUT = Path("data/processed/matches_with_elo.parquet")
 DEFAULT_FEATURE_OUTPUT = Path("data/processed/features.parquet")
 DEFAULT_FEATURE_REPORT = Path("reports/feature_quality.json")
+DEFAULT_TRAIN_INPUT = Path("data/processed/features.parquet")
+DEFAULT_MODEL_OUTPUT = Path("models/model_v1.joblib")
+DEFAULT_METADATA_OUTPUT = Path("models/model_v1_metadata.json")
+DEFAULT_PREDICTIONS_OUTPUT = Path("reports/model_v1_predictions.parquet")
+DEFAULT_TRAINING_SUMMARY_OUTPUT = Path("reports/model_v1_training_summary.json")
 
 
 @app.callback()
@@ -196,6 +201,67 @@ def build_features(
         f"{result.report.eligible_history_updates} eligible history update(s) -> {output}"
     )
     console.print(f"Report -> {report}")
+
+
+@app.command()
+def train(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to the model-ready feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_INPUT,
+    model_output: Annotated[
+        Path,
+        typer.Option("--model-output", help="Path for the trained model joblib artifact."),
+    ] = DEFAULT_MODEL_OUTPUT,
+    metadata_output: Annotated[
+        Path,
+        typer.Option("--metadata-output", help="Path for the model metadata JSON output."),
+    ] = DEFAULT_METADATA_OUTPUT,
+    predictions_output: Annotated[
+        Path,
+        typer.Option("--predictions-output", help="Path for partitioned predictions Parquet."),
+    ] = DEFAULT_PREDICTIONS_OUTPUT,
+    summary_output: Annotated[
+        Path,
+        typer.Option("--summary-output", help="Path for the training summary JSON output."),
+    ] = DEFAULT_TRAINING_SUMMARY_OUTPUT,
+) -> None:
+    """Train the baseline chronological probability model."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.train import train_probability_model, write_training_outputs
+
+    features = pd.read_parquet(input)
+    try:
+        result = train_probability_model(
+            features,
+            input_dataset_path=input,
+            model_output_path=model_output,
+            prediction_output_path=predictions_output,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Training failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    write_training_outputs(
+        result,
+        model_output,
+        metadata_output,
+        predictions_output,
+        summary_output,
+    )
+    console.print(
+        "Trained "
+        f"{result.metadata.model_version} with "
+        f"{result.summary.train_rows} train, "
+        f"{result.summary.validation_rows} validation, "
+        f"{result.summary.test_rows} test row(s) -> {model_output}"
+    )
+    console.print(f"Metadata -> {metadata_output}")
+    console.print(f"Predictions -> {predictions_output}")
+    console.print(f"Summary -> {summary_output}")
 
 
 if __name__ == "__main__":

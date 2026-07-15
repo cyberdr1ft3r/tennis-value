@@ -6,6 +6,7 @@ import pytest
 from tennis_value.elo import add_elo_features
 from tennis_value.features import build_feature_dataset
 from tennis_value.rolling import add_rolling_features
+from tennis_value.train import MODEL_FEATURES, NUMERIC_FEATURES, train_probability_model
 
 
 def _match(
@@ -142,3 +143,72 @@ def test_shuffled_input_produces_identical_feature_output() -> None:
     second = build_feature_dataset(shuffled)
 
     pd.testing.assert_frame_equal(first, second)
+
+
+def _training_row(
+    match_id: str,
+    match_date: str,
+    target: bool,
+    value: float,
+    log_rank_diff: float | None = 0.0,
+) -> dict[str, object]:
+    return {
+        "match_id": match_id,
+        "match_date": pd.Timestamp(match_date),
+        "surface": "Hard",
+        "player_1": f"{match_id} A",
+        "player_2": f"{match_id} B",
+        "player_1_won": target,
+        "player_1_odds": 1.8,
+        "player_2_odds": 2.0,
+        "is_retirement": False,
+        "overall_elo_diff": value,
+        "surface_elo_diff": value,
+        "log_rank_diff": log_rank_diff,
+        "recent_10_win_rate_diff": 0.0,
+        "surface_recent_10_win_rate_diff": 0.0,
+        "days_since_last_match_diff": value,
+        "matches_last_14d_diff": 0,
+        "history_count_min": 0,
+        "best_of_5": 0,
+        "surface_clay": 0,
+        "surface_grass": 0,
+    }
+
+
+def test_training_preprocessor_ignores_validation_and_test_extremes() -> None:
+    frame = pd.DataFrame(
+        [
+            _training_row("tr01", "2020-01-01", True, 1.0, 1.0),
+            _training_row("tr02", "2021-01-01", False, 2.0, 2.0),
+            _training_row("tr03", "2022-01-01", True, 3.0, None),
+            _training_row("tr04", "2023-12-31", False, 4.0, 4.0),
+            _training_row("va01", "2024-01-01", True, 1_000_000.0, 1_000_000.0),
+            _training_row("te01", "2025-01-01", False, -1_000_000.0, -1_000_000.0),
+        ]
+    )
+
+    result = train_probability_model(frame)
+    numeric_pipeline = result.model.named_steps["preprocessor"].named_transformers_["numeric"]
+    imputer = numeric_pipeline.named_steps["imputer"]
+    scaler = numeric_pipeline.named_steps["scaler"]
+    log_rank_index = NUMERIC_FEATURES.index("log_rank_diff")
+
+    assert imputer.statistics_[log_rank_index] == pytest.approx(2.0)
+    assert max(abs(value) for value in imputer.statistics_) < 100
+    assert max(abs(value) for value in scaler.mean_[: len(NUMERIC_FEATURES)]) < 100
+
+
+def test_training_model_features_exclude_odds_target_and_identity_columns() -> None:
+    forbidden = {
+        "match_id",
+        "match_date",
+        "player_1",
+        "player_2",
+        "player_1_odds",
+        "player_2_odds",
+        "player_1_won",
+        "is_retirement",
+    }
+
+    assert forbidden.isdisjoint(MODEL_FEATURES)

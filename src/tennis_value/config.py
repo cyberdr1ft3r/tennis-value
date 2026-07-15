@@ -109,6 +109,16 @@ class FeatureConfig(FrozenModel):
     rolling: RollingFeatureConfig = Field(default_factory=RollingFeatureConfig)
 
 
+class TrainingConfig(FrozenModel):
+    """Configuration for the baseline probability model."""
+
+    model_version: str = "model_v1"
+    classifier_c: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    max_iter: int = Field(default=2000, gt=0)
+    random_state: int = 42
+    date_splits: DateSplitConfig = Field(default_factory=lambda: DateSplitConfig())
+
+
 class DataSeasonConfig(FrozenModel):
     """Supported data season boundaries."""
 
@@ -202,6 +212,7 @@ class AppConfig(FrozenModel):
     data_seasons: DataSeasonConfig = Field(default_factory=DataSeasonConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
     features: FeatureConfig = Field(default_factory=FeatureConfig)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
     date_splits: DateSplitConfig = Field(default_factory=DateSplitConfig)
     value_thresholds: ValueThresholds = Field(default_factory=ValueThresholds)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
@@ -228,5 +239,6 @@ __all__ = [
     "PipelinePaths",
     "RollingFeatureConfig",
     "SupportedSurface",
+    "TrainingConfig",
     "ValueThresholds",
 ]

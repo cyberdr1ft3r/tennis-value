@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from tennis_value.config import (
     AppConfig,
     BacktestConfig,
+    DataSeasonConfig,
     DateSplitConfig,
     EloConfig,
     PipelinePaths,
@@ -19,6 +20,9 @@ from tennis_value.config import (
 def test_app_config_defaults_match_task_two() -> None:
     config = AppConfig()
 
+    assert config.data_seasons.start_season == 2020
+    assert config.data_seasons.end_season == 2025
+    assert config.data_seasons.seasons == (2020, 2021, 2022, 2023, 2024, 2025)
     assert config.date_splits.seasons == (2020, 2021, 2022, 2023, 2024, 2025)
     assert config.date_splits.train_end == date(2023, 12, 31)
     assert config.date_splits.validation_start == date(2024, 1, 1)
@@ -36,6 +40,31 @@ def test_app_config_defaults_match_task_two() -> None:
     assert config.value_thresholds.min_odds == 1.50
     assert config.value_thresholds.max_odds == 3.50
     assert config.supported_surfaces == ("Hard", "Clay", "Grass")
+
+
+def test_valid_custom_configuration() -> None:
+    config = AppConfig(
+        paths=PipelinePaths(project_root=Path("custom-root")),
+        data_seasons=DataSeasonConfig(start_season=2021, end_season=2024),
+        date_splits=DateSplitConfig(
+            seasons=(2021, 2022, 2023, 2024),
+            train_start=date(2021, 1, 1),
+            train_end=date(2022, 12, 31),
+            validation_start=date(2023, 1, 1),
+            validation_end=date(2023, 12, 31),
+            test_start=date(2024, 1, 1),
+            test_end=date(2024, 12, 31),
+        ),
+        elo=EloConfig(initial_rating=1600, k_factor=24, elo_scale=420),
+        value_thresholds=ValueThresholds(min_odds=1.6, max_odds=3.2),
+        backtest=BacktestConfig(starting_bankroll=5000, flat_stake_fraction=0.01),
+    )
+
+    assert config.paths.reports_path == Path("custom-root/reports")
+    assert config.data_seasons.seasons == (2021, 2022, 2023, 2024)
+    assert config.elo.k_factor == 24
+    assert config.value_thresholds.max_odds == 3.2
+    assert config.backtest.flat_stake_fraction == 0.01
 
 
 def test_paths_resolve_relative_to_configurable_project_root() -> None:
@@ -69,6 +98,11 @@ def test_date_splits_reject_unsorted_or_duplicate_seasons() -> None:
         DateSplitConfig(seasons=(2020, 2020))
 
 
+def test_invalid_supported_data_season_range_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        DataSeasonConfig(start_season=2025, end_season=2020)
+
+
 def test_invalid_elo_parameters_are_rejected() -> None:
     with pytest.raises(ValidationError):
         EloConfig(initial_rating=0)
@@ -85,6 +119,10 @@ def test_invalid_value_thresholds_are_rejected() -> None:
         ValueThresholds(min_odds=3.5, max_odds=1.5)
     with pytest.raises(ValidationError):
         ValueThresholds(min_odds=1.0)
+    with pytest.raises(ValidationError):
+        ValueThresholds(min_edge=-0.01)
+    with pytest.raises(ValidationError):
+        ValueThresholds(min_expected_value=-0.01)
 
 
 def test_invalid_backtest_values_are_rejected() -> None:

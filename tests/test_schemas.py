@@ -77,6 +77,24 @@ def test_canonical_match_contains_required_master_schema_fields() -> None:
     assert match.player_1_won is True
 
 
+def test_canonical_match_allows_missing_optional_rankings_and_odds() -> None:
+    match = CanonicalMatch(
+        match_id=MATCH_ID,
+        match_date=date(2024, 1, 2),
+        tournament="Brisbane",
+        surface="Hard",
+        round="R32",
+        best_of=3,
+        player_1="Player A",
+        player_2="Player B",
+        player_1_won=True,
+        source_file="2024.csv",
+    )
+
+    assert match.player_1_rank is None
+    assert match.player_2_odds is None
+
+
 def test_canonical_match_rejects_invalid_match_id_and_odds() -> None:
     with pytest.raises(ValidationError):
         CanonicalMatch(
@@ -89,6 +107,33 @@ def test_canonical_match_rejects_invalid_match_id_and_odds() -> None:
             player_1="Player A",
             player_2="Player B",
             player_1_odds=1.0,
+            player_1_won=True,
+            source_file="2024.csv",
+        )
+
+
+def test_match_schemas_reject_invalid_best_of_values() -> None:
+    with pytest.raises(ValidationError):
+        RawMatch(
+            match_date=date(2024, 1, 2),
+            tournament="Brisbane",
+            surface="Hard",
+            best_of=4,  # type: ignore[arg-type]
+            winner="Player A",
+            loser="Player B",
+            source_file="2024.csv",
+        )
+
+    with pytest.raises(ValidationError):
+        CanonicalMatch(
+            match_id=MATCH_ID,
+            match_date=date(2024, 1, 2),
+            tournament="Brisbane",
+            surface="Hard",
+            round="R32",
+            best_of=1,  # type: ignore[arg-type]
+            player_1="Player A",
+            player_2="Player B",
             player_1_won=True,
             source_file="2024.csv",
         )

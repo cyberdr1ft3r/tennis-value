@@ -95,6 +95,25 @@ class EloConfig(FrozenModel):
     elo_scale: float = Field(default=400.0, gt=0)
 
 
+class DataSeasonConfig(FrozenModel):
+    """Supported data season boundaries."""
+
+    start_season: int = Field(default=2020, ge=1900)
+    end_season: int = Field(default=2025, ge=1900)
+
+    @model_validator(mode="after")
+    def _season_range_must_be_ordered(self) -> Self:
+        if self.start_season > self.end_season:
+            msg = "start_season must be less than or equal to end_season"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def seasons(self) -> tuple[int, ...]:
+        """Return the supported seasons as an inclusive tuple."""
+        return tuple(range(self.start_season, self.end_season + 1))
+
+
 class DateSplitConfig(FrozenModel):
     """Chronological season and model split boundaries."""
 
@@ -141,8 +160,8 @@ class ValueThresholds(FrozenModel):
     """Default research thresholds for value detection."""
 
     min_model_probability: float = Field(default=0.55, ge=0, le=1)
-    min_edge: float = Field(default=0.04, ge=-1, le=1)
-    min_expected_value: float = Field(default=0.03, ge=-1)
+    min_edge: float = Field(default=0.04, ge=0, le=1)
+    min_expected_value: float = Field(default=0.03, ge=0)
     min_odds: float = Field(default=1.50, gt=1)
     max_odds: float = Field(default=3.50, gt=1)
 
@@ -166,6 +185,7 @@ class AppConfig(FrozenModel):
     """Top-level application configuration."""
 
     paths: PipelinePaths = Field(default_factory=PipelinePaths)
+    data_seasons: DataSeasonConfig = Field(default_factory=DataSeasonConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
     date_splits: DateSplitConfig = Field(default_factory=DateSplitConfig)
     value_thresholds: ValueThresholds = Field(default_factory=ValueThresholds)
@@ -186,6 +206,7 @@ class AppConfig(FrozenModel):
 __all__ = [
     "AppConfig",
     "BacktestConfig",
+    "DataSeasonConfig",
     "DateSplitConfig",
     "EloConfig",
     "PipelinePaths",

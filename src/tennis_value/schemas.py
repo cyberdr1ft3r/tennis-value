@@ -12,6 +12,7 @@ from tennis_value.config import SupportedSurface
 PlayerSelection = Literal["player_1", "player_2"]
 ValueSelection = Literal["player_1", "player_2", "none"]
 BetStatus = Literal["open", "won", "lost", "void"]
+BestOf = Literal[3, 5]
 
 
 class DomainModel(BaseModel):
@@ -34,7 +35,7 @@ class RawMatch(DomainModel):
     tournament: str
     surface: SupportedSurface
     round: str | None = None
-    best_of: int | None = Field(default=None, ge=1)
+    best_of: BestOf | None = None
     winner: str
     loser: str
     winner_rank: int | None = Field(default=None, gt=0)
@@ -65,7 +66,7 @@ class CanonicalMatch(DomainModel):
     tournament: str
     surface: SupportedSurface
     round: str
-    best_of: int = Field(ge=1)
+    best_of: BestOf
     player_1: str
     player_2: str
     player_1_rank: int | None = Field(default=None, gt=0)
@@ -197,6 +198,7 @@ class PaperBet(DomainModel):
 
 __all__ = [
     "BetStatus",
+    "BestOf",
     "CanonicalMatch",
     "FeatureRow",
     "PaperBet",

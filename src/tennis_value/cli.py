@@ -11,7 +11,7 @@ from rich.console import Console
 
 from tennis_value import __version__
 from tennis_value.cleaning import clean_matches, write_cleaning_outputs
-from tennis_value.config import EloConfig, FeatureConfig
+from tennis_value.config import EloConfig, FeatureConfig, ValueThresholds
 from tennis_value.elo import add_elo_features_with_report, write_elo_outputs
 from tennis_value.features import build_features_with_report, write_feature_outputs
 from tennis_value.ingest import IngestionFailure, ingest_tennis_data, write_ingestion_outputs
@@ -44,6 +44,9 @@ DEFAULT_CALIBRATION_OUTPUT = Path("reports/model_v1_calibration.parquet")
 DEFAULT_SURFACE_OUTPUT = Path("reports/model_v1_surface_metrics.parquet")
 DEFAULT_CALIBRATION_PLOT = Path("reports/model_v1_calibration.png")
 DEFAULT_DISTRIBUTION_PLOT = Path("reports/model_v1_probability_distribution.png")
+DEFAULT_VALUE_PREDICTIONS = Path("reports/model_v1_predictions.parquet")
+DEFAULT_VALUE_OUTPUT = Path("reports/model_v1_value_assessments.parquet")
+DEFAULT_VALUE_SUMMARY = Path("reports/model_v1_value_summary.json")
 
 
 @app.callback()
@@ -381,6 +384,105 @@ def evaluate(
     console.print(f"Surface metrics -> {surface_output}")
     console.print(f"Calibration plot -> {calibration_plot}")
     console.print(f"Distribution plot -> {distribution_plot}")
+
+
+@app.command("assess-value")
+def assess_value(
+    predictions: Annotated[
+        Path,
+        typer.Option("--predictions", help="Path to model prediction Parquet output."),
+    ] = DEFAULT_VALUE_PREDICTIONS,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Path for value assessment Parquet output."),
+    ] = DEFAULT_VALUE_OUTPUT,
+    summary: Annotated[
+        Path,
+        typer.Option("--summary", help="Path for value assessment summary JSON."),
+    ] = DEFAULT_VALUE_SUMMARY,
+    minimum_probability: Annotated[
+        float | None,
+        typer.Option("--minimum-probability", help="Override minimum model probability."),
+    ] = None,
+    minimum_edge: Annotated[
+        float | None,
+        typer.Option("--minimum-edge", help="Override minimum edge versus no-vig market."),
+    ] = None,
+    minimum_expected_value: Annotated[
+        float | None,
+        typer.Option("--minimum-expected-value", help="Override minimum theoretical EV."),
+    ] = None,
+    minimum_odds: Annotated[
+        float | None,
+        typer.Option("--minimum-odds", help="Override minimum decimal odds."),
+    ] = None,
+    maximum_odds: Annotated[
+        float | None,
+        typer.Option("--maximum-odds", help="Override maximum decimal odds."),
+    ] = None,
+) -> None:
+    """Assess theoretical betting value in saved probability predictions."""
+    if not predictions.exists():
+        console.print(f"[red]Predictions file does not exist: {predictions}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.value import assess_predictions_with_summary, write_value_outputs
+
+    default_thresholds = ValueThresholds()
+    try:
+        thresholds = ValueThresholds(
+            min_model_probability=(
+                default_thresholds.min_model_probability
+                if minimum_probability is None
+                else minimum_probability
+            ),
+            min_edge=default_thresholds.min_edge if minimum_edge is None else minimum_edge,
+            min_expected_value=(
+                default_thresholds.min_expected_value
+                if minimum_expected_value is None
+                else minimum_expected_value
+            ),
+            min_odds=default_thresholds.min_odds if minimum_odds is None else minimum_odds,
+            max_odds=default_thresholds.max_odds if maximum_odds is None else maximum_odds,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Invalid value thresholds: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        prediction_rows = pd.read_parquet(predictions)
+        result = assess_predictions_with_summary(prediction_rows, thresholds)
+    except (ImportError, KeyError, ValueError) as exc:
+        console.print(f"[red]Value assessment failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    write_value_outputs(result, output, summary)
+
+    top_skip_reasons = sorted(
+        result.summary.skip_reason_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[:5]
+    console.print("Theoretical paper-value assessments")
+    console.print(f"Model version: {result.summary.model_version or 'N/A'}")
+    console.print(f"Rows assessed: {result.summary.rows_assessed}")
+    console.print(f"Rows with valid odds: {result.summary.rows_with_valid_odds}")
+    console.print(f"Recommendations: {result.summary.rows_with_recommendations}")
+    console.print(f"Recommendation rate: {result.summary.recommendation_rate:.6f}")
+    console.print(
+        f"Average recommended odds: {_display_metric(result.summary.average_recommended_odds)}"
+    )
+    console.print(f"Average edge: {_display_metric(result.summary.average_recommended_edge)}")
+    console.print(
+        "Average expected value: "
+        f"{_display_metric(result.summary.average_recommended_expected_value)}"
+    )
+    if top_skip_reasons:
+        console.print(
+            "Top skip reasons: "
+            + ", ".join(f"{reason}={count}" for reason, count in top_skip_reasons)
+        )
+    console.print(f"Assessments -> {output}")
+    console.print(f"Summary -> {summary}")
 
 
 def _display_metric(value: object) -> str:

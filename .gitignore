@@ -20,6 +20,7 @@ dist/
 build/
 data/raw/tennis_data/*
 !data/raw/tennis_data/.gitkeep
+data/raw/sackmann/*
 data/processed/*
 !data/processed/.gitkeep
 models/*

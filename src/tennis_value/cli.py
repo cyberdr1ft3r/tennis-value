@@ -111,6 +111,20 @@ DEFAULT_MARKET_ANCHOR_LOG_LOSS_PLOT = Path("reports/market_anchor_log_loss_compa
 DEFAULT_MARKET_ANCHOR_IMPROVEMENT_PLOT = Path(
     "reports/market_anchor_improvement_comparison.png"
 )
+DEFAULT_SACKMANN_RAW = Path("data/raw/sackmann")
+DEFAULT_SACKMANN_FETCH_MANIFEST = Path("reports/sackmann_fetch_manifest.json")
+DEFAULT_SACKMANN_MATCHES = Path("data/processed/matches.parquet")
+DEFAULT_SACKMANN_BASE_FEATURES = Path("data/processed/features.parquet")
+DEFAULT_SACKMANN_ENRICHED_FEATURES = Path("data/processed/features_sackmann_enriched.parquet")
+DEFAULT_SACKMANN_ALIASES = Path("config/sackmann_player_aliases.csv")
+DEFAULT_SACKMANN_MATCH_LINKS = Path("data/processed/sackmann_match_links.parquet")
+DEFAULT_SACKMANN_JOIN_SUMMARY = Path("reports/sackmann_join_summary.json")
+DEFAULT_SACKMANN_JOIN_FAILURES = Path("reports/sackmann_join_failures.parquet")
+DEFAULT_SACKMANN_MANUAL_REVIEW = Path("reports/sackmann_manual_review.csv")
+DEFAULT_SACKMANN_STATS_QUALITY = Path("reports/sackmann_match_stats_quality.json")
+DEFAULT_SACKMANN_FEATURE_QUALITY = Path("reports/sackmann_feature_quality.json")
+DEFAULT_SACKMANN_FEATURE_DICTIONARY = Path("reports/sackmann_feature_dictionary.json")
+DEFAULT_SACKMANN_LEAKAGE_AUDIT = Path("reports/sackmann_leakage_audit.json")
 
 
 @app.callback()
@@ -1094,6 +1108,145 @@ def benchmark_markets(
             )
     console.print(f"Metrics -> {paths.metrics}")
     console.print(f"Summary -> {paths.summary}")
+
+
+@app.command("fetch-sackmann")
+def fetch_sackmann(
+    start_year: Annotated[
+        int,
+        typer.Option("--start-year", help="First Sackmann ATP match year to download."),
+    ] = 2015,
+    end_year: Annotated[
+        int,
+        typer.Option("--end-year", help="Last Sackmann ATP match year to download."),
+    ] = 2025,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Directory for downloaded Sackmann CSV files."),
+    ] = DEFAULT_SACKMANN_RAW,
+    manifest: Annotated[
+        Path,
+        typer.Option("--manifest", help="JSON manifest path for downloaded files."),
+    ] = DEFAULT_SACKMANN_FETCH_MANIFEST,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Redownload files even when valid files already exist."),
+    ] = False,
+) -> None:
+    """Download official Jeff Sackmann ATP yearly match-stat files."""
+    from scripts.fetch_sackmann_data import fetch_sackmann_files
+
+    try:
+        results = fetch_sackmann_files(
+            start_year=start_year,
+            end_year=end_year,
+            output_dir=output,
+            manifest_path=manifest,
+            force=force,
+        )
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]Sackmann download failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    statuses: dict[str, int] = {}
+    for result in results:
+        statuses[result.download_status] = statuses.get(result.download_status, 0) + 1
+    console.print(
+        "Sackmann files: "
+        + ", ".join(f"{status}={count}" for status, count in sorted(statuses.items()))
+    )
+    console.print(f"Files loaded: {len(results)}")
+    console.print(f"Manifest -> {manifest}")
+
+
+@app.command("build-sackmann-features")
+def build_sackmann_features(
+    matches: Annotated[
+        Path,
+        typer.Option("--matches", help="Canonical project matches Parquet path."),
+    ] = DEFAULT_SACKMANN_MATCHES,
+    base_features: Annotated[
+        Path,
+        typer.Option("--base-features", help="Existing base feature Parquet path."),
+    ] = DEFAULT_SACKMANN_BASE_FEATURES,
+    sackmann_input: Annotated[
+        Path,
+        typer.Option("--sackmann-input", help="Directory containing Sackmann yearly CSV files."),
+    ] = DEFAULT_SACKMANN_RAW,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Enriched feature Parquet output."),
+    ] = DEFAULT_SACKMANN_ENRICHED_FEATURES,
+    aliases: Annotated[
+        Path,
+        typer.Option("--aliases", help="Optional explicit player alias CSV."),
+    ] = DEFAULT_SACKMANN_ALIASES,
+) -> None:
+    """Build leakage-safe Sackmann serve, return, and workload pre-match features."""
+    if not matches.exists():
+        console.print(f"[red]Canonical matches file does not exist: {matches}[/red]")
+        raise typer.Exit(code=1)
+    if not base_features.exists():
+        console.print(f"[red]Base features file does not exist: {base_features}[/red]")
+        raise typer.Exit(code=1)
+    if not sackmann_input.exists():
+        console.print(f"[red]Sackmann input directory does not exist: {sackmann_input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.sackmann import (
+        SackmannBuildPaths,
+        build_sackmann_enriched_features,
+        load_sackmann_matches,
+        write_sackmann_artifacts,
+    )
+
+    sackmann_matches, load_report = load_sackmann_matches(sackmann_input)
+    try:
+        result = build_sackmann_enriched_features(
+            project_matches=pd.read_parquet(matches),
+            base_features=pd.read_parquet(base_features),
+            sackmann_matches=sackmann_matches,
+            alias_path=aliases,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Sackmann feature build failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    paths = SackmannBuildPaths(
+        enriched_features=output,
+        match_links=DEFAULT_SACKMANN_MATCH_LINKS,
+        join_summary=DEFAULT_SACKMANN_JOIN_SUMMARY,
+        join_failures=DEFAULT_SACKMANN_JOIN_FAILURES,
+        manual_review=DEFAULT_SACKMANN_MANUAL_REVIEW,
+        stats_quality=DEFAULT_SACKMANN_STATS_QUALITY,
+        feature_quality=DEFAULT_SACKMANN_FEATURE_QUALITY,
+        feature_dictionary=DEFAULT_SACKMANN_FEATURE_DICTIONARY,
+        leakage_audit=DEFAULT_SACKMANN_LEAKAGE_AUDIT,
+    )
+    write_sackmann_artifacts(result, paths)
+
+    summary = result.join_summary
+    quality = result.feature_quality
+    leakage = result.leakage_audit
+    console.print(f"Files loaded: {load_report['files_loaded']}")
+    console.print(f"Sackmann rows loaded: {load_report['rows_loaded']}")
+    console.print(f"Project matches: {summary['project_matches']}")
+    console.print(f"Strict joins: {summary['strict_matches']}")
+    console.print(f"Fallback joins: {summary['unique_fallback_matches']}")
+    console.print(f"Ambiguous matches: {summary['ambiguous_matches']}")
+    console.print(f"Unmatched matches: {summary['unmatched_matches']}")
+    console.print(f"Join rate: {_display_metric(summary['join_rate'])}")
+    console.print(f"Orientation failures: {summary['stat_orientation_failures']}")
+    console.print(f"Enriched rows: {quality['enriched_rows']}")
+    console.print(f"Point-feature coverage: {_display_metric(quality['join_coverage'])}")
+    console.print(f"Duration coverage: {quality['duration_coverage']}")
+    console.print(f"2020 warm-up coverage: {leakage['warmup_2020_rows_with_prior_history']}")
+    console.print(
+        "Leakage checks passed: "
+        f"{leakage['same_day_leakage_checks_passed'] and leakage['future_leakage_checks_passed']}"
+    )
+    console.print(f"Enriched features -> {output}")
+    console.print(f"Join summary -> {paths.join_summary}")
 
 
 def _display_metric(value: object) -> str:

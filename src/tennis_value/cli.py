@@ -82,6 +82,19 @@ DEFAULT_DIAGNOSE_V2_SUMMARY = Path("reports/model_v2_diagnostic_summary.json")
 DEFAULT_DIAGNOSE_V2_BOOTSTRAP_PLOT = Path("reports/model_v2_bootstrap_distribution.png")
 DEFAULT_DIAGNOSE_V2_ABLATION_PLOT = Path("reports/model_v2_ablation_log_loss.png")
 DEFAULT_DIAGNOSE_V2_CORRECTION_PLOT = Path("reports/model_v2_correction_performance.png")
+DEFAULT_ODDS_AUDIT_SUMMARY = Path("reports/odds_source_audit.json")
+DEFAULT_ODDS_AUDIT_ROWS = Path("reports/odds_quality_rows.parquet")
+DEFAULT_ODDS_AUDIT_OVERROUND = Path("reports/odds_overround_by_source.parquet")
+DEFAULT_MODEL_V2_1_OUTPUT = Path("models/model_v2_1_form_workload.joblib")
+DEFAULT_MODEL_V2_1_METADATA = Path("models/model_v2_1_form_workload_metadata.json")
+DEFAULT_MODEL_V2_1_PREDICTIONS = Path("reports/model_v2_1_predictions.parquet")
+DEFAULT_MODEL_V2_1_ARCHITECTURE = Path("reports/model_v2_1_architecture_metrics.parquet")
+DEFAULT_MODEL_V2_1_BOOTSTRAP = Path("reports/model_v2_1_block_bootstrap.json")
+DEFAULT_MODEL_V2_1_CORRECTION = Path("reports/model_v2_1_correction_direction.parquet")
+DEFAULT_MODEL_V2_1_ODDS = Path("reports/model_v2_1_odds_sensitivity.parquet")
+DEFAULT_MODEL_V2_1_SUMMARY = Path("reports/model_v2_1_summary.json")
+DEFAULT_MODEL_V2_1_ARCHITECTURE_PLOT = Path("reports/model_v2_1_architecture_comparison.png")
+DEFAULT_MODEL_V2_1_CORRECTION_PLOT = Path("reports/model_v2_1_correction_calibration.png")
 
 
 @app.callback()
@@ -835,6 +848,142 @@ def diagnose_v2(
     console.print(f"Bootstrap significance -> {paths.bootstrap_significance}")
     console.print(f"Ablation metrics -> {paths.ablation_metrics}")
     console.print(f"Diagnostic summary -> {paths.diagnostic_summary}")
+
+
+@app.command("audit-odds")
+def audit_odds(
+    raw_input: Annotated[
+        Path,
+        typer.Option("--raw-input", help="Directory containing local Tennis-Data files."),
+    ] = DEFAULT_INGEST_INPUT,
+    processed_input: Annotated[
+        Path,
+        typer.Option("--processed-input", help="Optional processed feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_V2_INPUT,
+) -> None:
+    """Audit current bookmaker odds-source selection and odds quality."""
+    if not raw_input.exists():
+        console.print(f"[red]Raw input directory does not exist: {raw_input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.odds_audit import (
+        OddsAuditOutputPaths,
+        audit_odds_sources,
+        write_odds_audit_artifacts,
+    )
+
+    result = audit_odds_sources(raw_input, processed_input)
+    paths = OddsAuditOutputPaths(
+        summary=DEFAULT_ODDS_AUDIT_SUMMARY,
+        quality_rows=DEFAULT_ODDS_AUDIT_ROWS,
+        overround_by_source=DEFAULT_ODDS_AUDIT_OVERROUND,
+    )
+    write_odds_audit_artifacts(result, paths)
+    summary = result.summary
+    console.print("Odds source audit")
+    console.print(f"Selection policy: {summary.selected_source}")
+    console.print(
+        "Rows by source: "
+        + ", ".join(f"{source}={count}" for source, count in summary.rows_by_source.items())
+    )
+    console.print(f"Fallback rows: {summary.fallback_rows}")
+    console.print(
+        "Suspicious rows: "
+        + ", ".join(
+            f"{flag}={count}" for flag, count in summary.quality_flag_counts.items()
+        )
+    )
+    console.print(f"Summary -> {paths.summary}")
+    console.print(f"Quality rows -> {paths.quality_rows}")
+    console.print(f"Overround by source -> {paths.overround_by_source}")
+
+
+@app.command("train-v2-1")
+def train_v2_1(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to model-ready feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_V2_INPUT,
+    bootstrap_samples: Annotated[
+        int,
+        typer.Option("--bootstrap-samples", help="Paired block-bootstrap sample count."),
+    ] = 10_000,
+) -> None:
+    """Train the focused Model v2.1 form/workload market-correction experiment."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.train_v2_1 import (
+        ModelV21OutputPaths,
+        train_model_v2_1,
+        write_model_v2_1_artifacts,
+    )
+
+    try:
+        result = train_model_v2_1(
+            pd.read_parquet(input),
+            input_dataset_path=input,
+            bootstrap_samples=bootstrap_samples,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Model v2.1 training failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    paths = ModelV21OutputPaths(
+        model_output=DEFAULT_MODEL_V2_1_OUTPUT,
+        metadata_output=DEFAULT_MODEL_V2_1_METADATA,
+        predictions_output=DEFAULT_MODEL_V2_1_PREDICTIONS,
+        architecture_metrics=DEFAULT_MODEL_V2_1_ARCHITECTURE,
+        block_bootstrap=DEFAULT_MODEL_V2_1_BOOTSTRAP,
+        correction_direction=DEFAULT_MODEL_V2_1_CORRECTION,
+        odds_sensitivity=DEFAULT_MODEL_V2_1_ODDS,
+        summary=DEFAULT_MODEL_V2_1_SUMMARY,
+        architecture_comparison_plot=DEFAULT_MODEL_V2_1_ARCHITECTURE_PLOT,
+        correction_calibration_plot=DEFAULT_MODEL_V2_1_CORRECTION_PLOT,
+    )
+    write_model_v2_1_artifacts(result, paths)
+
+    metrics = result.architecture_metrics
+    console.print("Model v2.1 form/workload market-correction experiment")
+    console.print(
+        "year | raw market | recalibration | free form/workload | fixed offset | capped fixed"
+    )
+    for year in ("2023", "2024", "2025"):
+        group = metrics[metrics["segment"].astype(str).eq(year)]
+        values = {
+            str(row["architecture"]): row["model_log_loss"] for _, row in group.iterrows()
+        }
+        raw_market = group["raw_market_log_loss"].iloc[0] if not group.empty else None
+        console.print(
+            f"{year} | "
+            f"{_display_metric(raw_market)} | "
+            f"{_display_metric(values.get('market_recalibration'))} | "
+            f"{_display_metric(values.get('free_form_workload'))} | "
+            f"{_display_metric(values.get('fixed_offset_form_workload'))} | "
+            f"{_display_metric(values.get('fixed_offset_form_workload_capped'))}"
+        )
+    bootstrap = result.block_bootstrap["comparisons"]
+    capped = result.summary["capped_rows"]
+    capped_rate = result.summary["capped_row_rate"]
+    slopes = result.summary["correction_direction_slope_by_architecture"]
+    console.print("Pooled block-bootstrap vs raw market:")
+    for architecture, comparisons in bootstrap.items():
+        combined = comparisons["raw_market"]["combined_2023_2025"]
+        console.print(
+            f"{architecture}: "
+            f"{_display_metric(combined['mean_log_loss_improvement'])}, "
+            f"95% CI=[{_display_metric(combined['log_loss_ci_lower'])}, "
+            f"{_display_metric(combined['log_loss_ci_upper'])}]"
+        )
+    console.print(
+        "Correction-direction slope: "
+        + ", ".join(f"{name}={_display_metric(value)}" for name, value in slopes.items())
+    )
+    console.print(f"Capped rows: {capped} ({capped_rate:.2%})")
+    console.print(f"Model -> {paths.model_output}")
+    console.print(f"Predictions -> {paths.predictions_output}")
+    console.print(f"Summary -> {paths.summary}")
 
 
 def _display_metric(value: object) -> str:

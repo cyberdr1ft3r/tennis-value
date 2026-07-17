@@ -61,6 +61,14 @@ DEFAULT_BACKTEST_EDGE = Path("reports/backtest_by_edge_bucket.parquet")
 DEFAULT_BACKTEST_ODDS = Path("reports/backtest_by_odds_bucket.parquet")
 DEFAULT_BACKTEST_BANKROLL_PLOT = Path("reports/backtest_bankroll_curve.png")
 DEFAULT_BACKTEST_DRAWDOWN_PLOT = Path("reports/backtest_drawdown.png")
+DEFAULT_TRAIN_V2_INPUT = Path("data/processed/features.parquet")
+DEFAULT_MODEL_V2_OUTPUT = Path("models/model_v2.joblib")
+DEFAULT_MODEL_V2_METADATA = Path("models/model_v2_metadata.json")
+DEFAULT_MODEL_V2_PREDICTIONS = Path("reports/model_v2_predictions.parquet")
+DEFAULT_MODEL_V2_METRICS = Path("reports/model_v2_walk_forward_metrics.json")
+DEFAULT_MODEL_V2_CORRECTIONS = Path("reports/model_v2_corrections.parquet")
+DEFAULT_MODEL_V2_CALIBRATION = Path("reports/model_v2_calibration.parquet")
+DEFAULT_MODEL_V2_CORRECTION_PLOT = Path("reports/model_v2_correction_distribution.png")
 
 
 @app.callback()
@@ -618,6 +626,114 @@ def backtest(
     console.print(f"By odds bucket -> {odds_output}")
     console.print(f"Bankroll plot -> {bankroll_plot}")
     console.print(f"Drawdown plot -> {drawdown_plot}")
+
+
+@app.command("train-v2")
+def train_v2(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to model-ready feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_V2_INPUT,
+    model_output: Annotated[
+        Path,
+        typer.Option("--model-output", help="Path for trained Model v2 joblib artifact."),
+    ] = DEFAULT_MODEL_V2_OUTPUT,
+    metadata_output: Annotated[
+        Path,
+        typer.Option("--metadata-output", help="Path for Model v2 metadata JSON."),
+    ] = DEFAULT_MODEL_V2_METADATA,
+    predictions_output: Annotated[
+        Path,
+        typer.Option("--predictions-output", help="Path for walk-forward predictions Parquet."),
+    ] = DEFAULT_MODEL_V2_PREDICTIONS,
+    metrics_output: Annotated[
+        Path,
+        typer.Option("--metrics-output", help="Path for walk-forward metrics JSON."),
+    ] = DEFAULT_MODEL_V2_METRICS,
+    corrections_output: Annotated[
+        Path,
+        typer.Option("--corrections-output", help="Path for correction diagnostics Parquet."),
+    ] = DEFAULT_MODEL_V2_CORRECTIONS,
+    calibration_output: Annotated[
+        Path,
+        typer.Option("--calibration-output", help="Path for calibration table Parquet."),
+    ] = DEFAULT_MODEL_V2_CALIBRATION,
+    correction_plot: Annotated[
+        Path,
+        typer.Option("--correction-plot", help="Path for correction-distribution PNG."),
+    ] = DEFAULT_MODEL_V2_CORRECTION_PLOT,
+) -> None:
+    """Train the market-anchored walk-forward Model v2 experiment."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.train_v2 import (
+        ModelV2OutputPaths,
+        train_model_v2,
+        write_model_v2_artifacts,
+    )
+
+    features = pd.read_parquet(input)
+    model_v1_predictions = (
+        pd.read_parquet(DEFAULT_PREDICTIONS_OUTPUT)
+        if DEFAULT_PREDICTIONS_OUTPUT.exists()
+        else None
+    )
+    try:
+        result = train_model_v2(
+            features,
+            input_dataset_path=input,
+            model_v1_predictions=model_v1_predictions,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Model v2 training failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    output_paths = ModelV2OutputPaths(
+        model_output=model_output,
+        metadata_output=metadata_output,
+        predictions_output=predictions_output,
+        metrics_output=metrics_output,
+        corrections_output=corrections_output,
+        calibration_output=calibration_output,
+        correction_distribution_plot=correction_plot,
+    )
+    write_model_v2_artifacts(result, output_paths)
+
+    console.print("Market-anchored Model v2 walk-forward results")
+    console.print(
+        "year | rows | v2 log loss | market log loss | improvement | "
+        "v2 brier | market brier | AUC | calibration error | avg abs correction"
+    )
+    for fold in result.folds:
+        metrics = fold.metrics
+        v2_metrics = metrics["model_v2"]
+        market_metrics = metrics["market"]
+        correction = metrics["correction_diagnostics"]
+        calibration = result.metrics_report["calibration_summary"].get(
+            str(fold.evaluation_year),
+            {},
+        )
+        console.print(
+            f"{fold.evaluation_year} | "
+            f"{metrics['sample_count']} | "
+            f"{_display_metric(v2_metrics['log_loss'])} | "
+            f"{_display_metric(market_metrics['log_loss'])} | "
+            f"{_display_metric(metrics['log_loss_improvement_vs_market'])} | "
+            f"{_display_metric(v2_metrics['brier_score'])} | "
+            f"{_display_metric(market_metrics['brier_score'])} | "
+            f"{_display_metric(v2_metrics['roc_auc'])} | "
+            f"{_display_metric(calibration.get('expected_calibration_error'))} | "
+            f"{_display_metric(correction['mean_absolute_correction'])}"
+        )
+    console.print(f"Model -> {model_output}")
+    console.print(f"Metadata -> {metadata_output}")
+    console.print(f"Predictions -> {predictions_output}")
+    console.print(f"Metrics -> {metrics_output}")
+    console.print(f"Corrections -> {corrections_output}")
+    console.print(f"Calibration -> {calibration_output}")
+    console.print(f"Correction plot -> {correction_plot}")
 
 
 def _display_metric(value: object) -> str:

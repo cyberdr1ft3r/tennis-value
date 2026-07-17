@@ -17,9 +17,10 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Final, Iterable
+from typing import Final
 
 DEFAULT_YEARS: Final[tuple[int, ...]] = tuple(range(2020, 2026))
 MIN_YEAR: Final[int] = 2020

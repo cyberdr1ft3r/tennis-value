@@ -69,6 +69,19 @@ DEFAULT_MODEL_V2_METRICS = Path("reports/model_v2_walk_forward_metrics.json")
 DEFAULT_MODEL_V2_CORRECTIONS = Path("reports/model_v2_corrections.parquet")
 DEFAULT_MODEL_V2_CALIBRATION = Path("reports/model_v2_calibration.parquet")
 DEFAULT_MODEL_V2_CORRECTION_PLOT = Path("reports/model_v2_correction_distribution.png")
+DEFAULT_DIAGNOSE_V2_BOOTSTRAP = Path("reports/model_v2_bootstrap_significance.json")
+DEFAULT_DIAGNOSE_V2_ABLATION_METRICS = Path("reports/model_v2_ablation_metrics.parquet")
+DEFAULT_DIAGNOSE_V2_ABLATION_SUMMARY = Path("reports/model_v2_ablation_summary.json")
+DEFAULT_DIAGNOSE_V2_COEFFICIENTS = Path("reports/model_v2_coefficients.parquet")
+DEFAULT_DIAGNOSE_V2_CORRECTION_DIAGNOSTICS = Path(
+    "reports/model_v2_correction_diagnostics.parquet"
+)
+DEFAULT_DIAGNOSE_V2_CORRECTION_BUCKETS = Path("reports/model_v2_correction_buckets.parquet")
+DEFAULT_DIAGNOSE_V2_ODDS_QUALITY = Path("reports/model_v2_odds_quality_metrics.parquet")
+DEFAULT_DIAGNOSE_V2_SUMMARY = Path("reports/model_v2_diagnostic_summary.json")
+DEFAULT_DIAGNOSE_V2_BOOTSTRAP_PLOT = Path("reports/model_v2_bootstrap_distribution.png")
+DEFAULT_DIAGNOSE_V2_ABLATION_PLOT = Path("reports/model_v2_ablation_log_loss.png")
+DEFAULT_DIAGNOSE_V2_CORRECTION_PLOT = Path("reports/model_v2_correction_performance.png")
 
 
 @app.callback()
@@ -734,6 +747,94 @@ def train_v2(
     console.print(f"Corrections -> {corrections_output}")
     console.print(f"Calibration -> {calibration_output}")
     console.print(f"Correction plot -> {correction_plot}")
+
+
+@app.command("diagnose-v2")
+def diagnose_v2(
+    predictions: Annotated[
+        Path,
+        typer.Option("--predictions", help="Path to Model v2 predictions Parquet."),
+    ] = DEFAULT_MODEL_V2_PREDICTIONS,
+    features: Annotated[
+        Path,
+        typer.Option("--features", help="Path to model-ready feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_V2_INPUT,
+    bootstrap_samples: Annotated[
+        int,
+        typer.Option("--bootstrap-samples", help="Paired bootstrap sample count."),
+    ] = 10_000,
+) -> None:
+    """Run Model v2 significance, ablation, and correction diagnostics."""
+    if not predictions.exists():
+        console.print(f"[red]Predictions file does not exist: {predictions}[/red]")
+        raise typer.Exit(code=1)
+    if not features.exists():
+        console.print(f"[red]Features file does not exist: {features}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.diagnose_v2 import (
+        DiagnosticOutputPaths,
+        run_diagnostics,
+        write_diagnostic_artifacts,
+    )
+
+    try:
+        result = run_diagnostics(
+            predictions=pd.read_parquet(predictions),
+            features=pd.read_parquet(features),
+            bootstrap_samples=bootstrap_samples,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Model v2 diagnostics failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    paths = DiagnosticOutputPaths(
+        bootstrap_significance=DEFAULT_DIAGNOSE_V2_BOOTSTRAP,
+        ablation_metrics=DEFAULT_DIAGNOSE_V2_ABLATION_METRICS,
+        ablation_summary=DEFAULT_DIAGNOSE_V2_ABLATION_SUMMARY,
+        coefficients=DEFAULT_DIAGNOSE_V2_COEFFICIENTS,
+        correction_diagnostics=DEFAULT_DIAGNOSE_V2_CORRECTION_DIAGNOSTICS,
+        correction_buckets=DEFAULT_DIAGNOSE_V2_CORRECTION_BUCKETS,
+        odds_quality_metrics=DEFAULT_DIAGNOSE_V2_ODDS_QUALITY,
+        diagnostic_summary=DEFAULT_DIAGNOSE_V2_SUMMARY,
+        bootstrap_distribution_plot=DEFAULT_DIAGNOSE_V2_BOOTSTRAP_PLOT,
+        ablation_log_loss_plot=DEFAULT_DIAGNOSE_V2_ABLATION_PLOT,
+        correction_performance_plot=DEFAULT_DIAGNOSE_V2_CORRECTION_PLOT,
+    )
+    write_diagnostic_artifacts(result, paths)
+
+    console.print("Model v2 diagnostic analysis")
+    segments = result.bootstrap_significance["segments"]
+    for label, segment in segments.items():
+        log_loss = segment["log_loss"]
+        console.print(
+            f"{label}: improvement={_display_metric(log_loss['mean_improvement'])}, "
+            f"95% CI=[{_display_metric(log_loss['ci_lower'])}, "
+            f"{_display_metric(log_loss['ci_upper'])}], "
+            f"P(v2 > market)={_display_metric(log_loss['probability_model_beats_market'])}"
+        )
+    best_by_year = result.ablation_summary["best_variant_by_year"]
+    console.print(
+        "Best ablation variant by year: "
+        + ", ".join(f"{year}={item['variant']}" for year, item in best_by_year.items())
+    )
+    full_vs_recalibration = result.ablation_summary["full_model_v2_vs_market_recalibration"]
+    console.print(
+        "Full v2 beats market-only recalibration: "
+        + ", ".join(
+            f"{year}={item['full_beats_recalibration']}"
+            for year, item in full_vs_recalibration.items()
+        )
+    )
+    summary = result.diagnostic_summary
+    console.print(
+        "Best/worst correction buckets: "
+        f"{summary['best_correction_bucket']['correction_bucket']} / "
+        f"{summary['worst_correction_bucket']['correction_bucket']}"
+    )
+    console.print(f"Bootstrap significance -> {paths.bootstrap_significance}")
+    console.print(f"Ablation metrics -> {paths.ablation_metrics}")
+    console.print(f"Diagnostic summary -> {paths.diagnostic_summary}")
 
 
 def _display_metric(value: object) -> str:

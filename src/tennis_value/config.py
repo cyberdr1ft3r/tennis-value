@@ -9,6 +9,8 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SupportedSurface = Literal["Hard", "Clay", "Grass"]
+BacktestPartition = Literal["train", "validation", "test"]
+RetirementPolicy = Literal["void", "settle"]
 
 
 class FrozenModel(BaseModel):
@@ -200,8 +202,10 @@ class ValueThresholds(FrozenModel):
 class BacktestConfig(FrozenModel):
     """Configuration for flat-stake paper backtests."""
 
-    starting_bankroll: float = Field(default=10000.0, gt=0)
-    flat_stake_fraction: float = Field(default=0.005, gt=0, le=1)
+    starting_bankroll: float = Field(default=10000.0, gt=0, allow_inf_nan=False)
+    flat_stake_fraction: float = Field(default=0.005, gt=0, le=1, allow_inf_nan=False)
+    partition: BacktestPartition = "test"
+    retirement_policy: RetirementPolicy = "void"
     void_retirements: bool = True
 
 
@@ -231,6 +235,7 @@ class AppConfig(FrozenModel):
 
 __all__ = [
     "AppConfig",
+    "BacktestPartition",
     "BacktestConfig",
     "DataSeasonConfig",
     "DateSplitConfig",
@@ -238,6 +243,7 @@ __all__ = [
     "FeatureConfig",
     "PipelinePaths",
     "RollingFeatureConfig",
+    "RetirementPolicy",
     "SupportedSurface",
     "TrainingConfig",
     "ValueThresholds",

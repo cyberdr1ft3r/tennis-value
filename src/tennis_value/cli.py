@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import pandas as pd
 import typer
@@ -11,7 +11,13 @@ from rich.console import Console
 
 from tennis_value import __version__
 from tennis_value.cleaning import clean_matches, write_cleaning_outputs
-from tennis_value.config import EloConfig, FeatureConfig, ValueThresholds
+from tennis_value.config import (
+    BacktestConfig,
+    BacktestPartition,
+    EloConfig,
+    FeatureConfig,
+    ValueThresholds,
+)
 from tennis_value.elo import add_elo_features_with_report, write_elo_outputs
 from tennis_value.features import build_features_with_report, write_feature_outputs
 from tennis_value.ingest import IngestionFailure, ingest_tennis_data, write_ingestion_outputs
@@ -47,6 +53,14 @@ DEFAULT_DISTRIBUTION_PLOT = Path("reports/model_v1_probability_distribution.png"
 DEFAULT_VALUE_PREDICTIONS = Path("reports/model_v1_predictions.parquet")
 DEFAULT_VALUE_OUTPUT = Path("reports/model_v1_value_assessments.parquet")
 DEFAULT_VALUE_SUMMARY = Path("reports/model_v1_value_summary.json")
+DEFAULT_BACKTEST_INPUT = Path("reports/model_v1_value_assessments.parquet")
+DEFAULT_BACKTEST_BETS = Path("reports/backtest_bets.parquet")
+DEFAULT_BACKTEST_SUMMARY = Path("reports/backtest_summary.json")
+DEFAULT_BACKTEST_SURFACE = Path("reports/backtest_by_surface.parquet")
+DEFAULT_BACKTEST_EDGE = Path("reports/backtest_by_edge_bucket.parquet")
+DEFAULT_BACKTEST_ODDS = Path("reports/backtest_by_odds_bucket.parquet")
+DEFAULT_BACKTEST_BANKROLL_PLOT = Path("reports/backtest_bankroll_curve.png")
+DEFAULT_BACKTEST_DRAWDOWN_PLOT = Path("reports/backtest_drawdown.png")
 
 
 @app.callback()
@@ -485,12 +499,140 @@ def assess_value(
     console.print(f"Summary -> {summary}")
 
 
+@app.command()
+def backtest(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to Task 9 value assessment Parquet output."),
+    ] = DEFAULT_BACKTEST_INPUT,
+    bets_output: Annotated[
+        Path,
+        typer.Option("--bets-output", help="Path for bet ledger Parquet output."),
+    ] = DEFAULT_BACKTEST_BETS,
+    summary_output: Annotated[
+        Path,
+        typer.Option("--summary-output", help="Path for backtest summary JSON."),
+    ] = DEFAULT_BACKTEST_SUMMARY,
+    surface_output: Annotated[
+        Path,
+        typer.Option("--surface-output", help="Path for surface grouped Parquet output."),
+    ] = DEFAULT_BACKTEST_SURFACE,
+    edge_output: Annotated[
+        Path,
+        typer.Option("--edge-output", help="Path for edge-bucket grouped Parquet output."),
+    ] = DEFAULT_BACKTEST_EDGE,
+    odds_output: Annotated[
+        Path,
+        typer.Option("--odds-output", help="Path for odds-bucket grouped Parquet output."),
+    ] = DEFAULT_BACKTEST_ODDS,
+    bankroll_plot: Annotated[
+        Path,
+        typer.Option("--bankroll-plot", help="Path for bankroll curve PNG output."),
+    ] = DEFAULT_BACKTEST_BANKROLL_PLOT,
+    drawdown_plot: Annotated[
+        Path,
+        typer.Option("--drawdown-plot", help="Path for drawdown PNG output."),
+    ] = DEFAULT_BACKTEST_DRAWDOWN_PLOT,
+    starting_bankroll: Annotated[
+        float | None,
+        typer.Option("--starting-bankroll", help="Override starting paper bankroll."),
+    ] = None,
+    stake_fraction: Annotated[
+        float | None,
+        typer.Option("--stake-fraction", help="Override flat stake fraction."),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", help="Backtest partition to simulate."),
+    ] = None,
+) -> None:
+    """Run a historical flat-stake paper backtest."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.backtest import (
+        BacktestOutputPaths,
+        run_backtest,
+        write_backtest_artifacts,
+    )
+
+    default_config = BacktestConfig()
+    try:
+        selected_partition: BacktestPartition = _parse_backtest_partition(
+            default_config.partition if partition is None else partition
+        )
+        config = BacktestConfig(
+            starting_bankroll=(
+                default_config.starting_bankroll
+                if starting_bankroll is None
+                else starting_bankroll
+            ),
+            flat_stake_fraction=(
+                default_config.flat_stake_fraction if stake_fraction is None else stake_fraction
+            ),
+            partition=selected_partition,
+            retirement_policy=default_config.retirement_policy,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Invalid backtest configuration: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        assessments = pd.read_parquet(input)
+        result = run_backtest(assessments, config)
+    except (ImportError, KeyError, ValueError) as exc:
+        console.print(f"[red]Backtest failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    output_paths = BacktestOutputPaths(
+        bets_output=bets_output,
+        summary_output=summary_output,
+        surface_output=surface_output,
+        edge_output=edge_output,
+        odds_output=odds_output,
+        bankroll_plot=bankroll_plot,
+        drawdown_plot=drawdown_plot,
+    )
+    write_backtest_artifacts(result, output_paths)
+
+    summary = result.summary
+    console.print("Historical paper backtest")
+    console.print(f"Model version: {summary.get('model_version') or 'N/A'}")
+    console.print(f"Partition: {summary['partition']}")
+    console.print(f"Starting bankroll: {_display_metric(summary['starting_bankroll'])}")
+    console.print(f"Bets placed: {summary['bets_placed']}")
+    console.print(
+        f"Wins / losses / voids: {summary['wins']} / {summary['losses']} / {summary['voids']}"
+    )
+    console.print(f"Total staked: {_display_metric(summary['total_staked'])}")
+    console.print(f"Profit or loss: {_display_metric(summary['profit_loss'])}")
+    console.print(f"ROI: {_display_metric(summary['roi'])}")
+    console.print(f"Ending bankroll: {_display_metric(summary['ending_bankroll'])}")
+    console.print(f"Maximum drawdown: {_display_metric(summary['maximum_drawdown'])}")
+    console.print(f"Average odds: {_display_metric(summary['average_odds'])}")
+    console.print(f"Bets -> {bets_output}")
+    console.print(f"Summary -> {summary_output}")
+    console.print(f"By surface -> {surface_output}")
+    console.print(f"By edge bucket -> {edge_output}")
+    console.print(f"By odds bucket -> {odds_output}")
+    console.print(f"Bankroll plot -> {bankroll_plot}")
+    console.print(f"Drawdown plot -> {drawdown_plot}")
+
+
 def _display_metric(value: object) -> str:
     if value is None:
         return "N/A"
     if isinstance(value, float):
         return f"{value:.6f}"
     return str(value)
+
+
+def _parse_backtest_partition(value: str) -> BacktestPartition:
+    if value in {"train", "validation", "test"}:
+        return cast(BacktestPartition, value)
+    msg = f"unsupported partition: {value}"
+    raise ValueError(msg)
 
 
 if __name__ == "__main__":

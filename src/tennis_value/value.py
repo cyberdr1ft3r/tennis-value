@@ -82,8 +82,10 @@ class MatchValueAssessment(BaseModel):
     surface: str | None
     player_1: str | None
     player_2: str | None
+    actual_player_1_won: bool | None = None
     model_version: str | None
     odds_source: str | None = None
+    is_retirement: bool = False
     player_1_assessment: SelectionAssessment
     player_2_assessment: SelectionAssessment
     recommended_side: SelectionSide = "none"
@@ -296,8 +298,14 @@ def assess_match_value(
         surface=surface,
         player_1=player_1,
         player_2=player_2,
+        actual_player_1_won=(
+            None if _is_missing(row.get("actual_player_1_won")) else _coerce_optional_bool(
+                row.get("actual_player_1_won")
+            )
+        ),
         model_version=_optional_text(row.get("model_version")),
         odds_source=_optional_text(row.get("odds_source")),
+        is_retirement=_coerce_optional_bool(row.get("is_retirement")),
         player_1_assessment=player_1_assessment,
         player_2_assessment=player_2_assessment,
         recommended_side=selected.selection_side if selected else "none",
@@ -482,6 +490,7 @@ def _flatten_assessment(assessment: MatchValueAssessment) -> dict[str, Any]:
         "surface": assessment.surface,
         "player_1": assessment.player_1,
         "player_2": assessment.player_2,
+        "actual_player_1_won": assessment.actual_player_1_won,
         "model_version": assessment.model_version,
         "odds_source": assessment.odds_source,
         "overround": player_1.overround,
@@ -510,6 +519,7 @@ def _flatten_assessment(assessment: MatchValueAssessment) -> dict[str, Any]:
         "recommended_edge": assessment.recommended_edge,
         "recommended_expected_value": assessment.recommended_expected_value,
         "has_recommendation": assessment.has_recommendation,
+        "is_retirement": assessment.is_retirement,
         "decision_reason_codes": "|".join(assessment.decision_reason_codes),
     }
 

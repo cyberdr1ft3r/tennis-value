@@ -46,7 +46,8 @@ class OddsSourceAuditSummary(BaseModel):
     source_consistency: dict[str, Any]
     quality_flag_counts: dict[str, int] = Field(default_factory=dict)
     suspected_use_of_maximum_odds: bool
-    suspected_winner_loser_pair_mismatch_rows: int
+    market_reference_disagreement_rows: int
+    bookmaker_to_bookmaker_disagreement_rows: int
     processed_rows: int | None = None
     processed_rows_with_missing_odds: int | None = None
 
@@ -59,6 +60,9 @@ class OddsSourceAuditResult(BaseModel):
     summary: OddsSourceAuditSummary
     quality_rows: pd.DataFrame
     overround_by_source: pd.DataFrame
+    side_integrity_summary: dict[str, Any] | None = None
+    side_integrity_rows: pd.DataFrame | None = None
+    manual_review_rows: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,9 @@ class OddsAuditOutputPaths:
     summary: Path
     quality_rows: Path
     overround_by_source: Path
+    side_integrity_summary: Path | None = None
+    side_integrity_rows: Path | None = None
+    manual_review_rows: Path | None = None
 
 
 def audit_odds_sources(
@@ -81,6 +88,9 @@ def audit_odds_sources(
     if raw_rows.empty:
         raw_rows = pd.DataFrame(columns=OUTPUT_COLUMNS)
     quality_rows = build_odds_quality_rows(raw_rows)
+    side_summary: dict[str, Any] | None = None
+    side_rows: pd.DataFrame | None = None
+    manual_review: pd.DataFrame | None = None
     overround_by_source = build_overround_by_source(quality_rows)
     processed_rows: int | None = None
     processed_missing: int | None = None
@@ -90,6 +100,8 @@ def audit_odds_sources(
         processed_missing = int(
             (processed["player_1_odds"].isna() | processed["player_2_odds"].isna()).sum()
         ) if {"player_1_odds", "player_2_odds"}.issubset(processed.columns) else None
+        side_summary, side_rows = build_odds_side_integrity(processed)
+        manual_review = build_manual_review_rows(processed, side_rows)
 
     rows_by_source = _value_counts(quality_rows, "odds_source")
     fallback_rows = int(quality_rows["used_fallback_source"].sum()) if not quality_rows.empty else 0
@@ -100,7 +112,8 @@ def audit_odds_sources(
         "either_odd_above_30",
         "missing_paired_odds",
         "suspected_maximum_odds",
-        "suspected_winner_loser_pair_mismatch",
+        "large_market_reference_disagreement",
+        "bookmaker_to_bookmaker_disagreement",
     ]
     quality_counts = {
         column: int(quality_rows[column].sum()) if column in quality_rows else 0
@@ -127,8 +140,11 @@ def audit_odds_sources(
         source_consistency=_source_consistency(quality_rows),
         quality_flag_counts=quality_counts,
         suspected_use_of_maximum_odds=bool(quality_counts["suspected_maximum_odds"] > 0),
-        suspected_winner_loser_pair_mismatch_rows=quality_counts[
-            "suspected_winner_loser_pair_mismatch"
+        market_reference_disagreement_rows=quality_counts[
+            "large_market_reference_disagreement"
+        ],
+        bookmaker_to_bookmaker_disagreement_rows=quality_counts[
+            "bookmaker_to_bookmaker_disagreement"
         ],
         processed_rows=processed_rows,
         processed_rows_with_missing_odds=processed_missing,
@@ -137,6 +153,9 @@ def audit_odds_sources(
         summary=summary,
         quality_rows=quality_rows,
         overround_by_source=overround_by_source,
+        side_integrity_summary=side_summary,
+        side_integrity_rows=side_rows,
+        manual_review_rows=manual_review,
     )
 
 
@@ -169,9 +188,10 @@ def build_odds_quality_rows(raw_rows: pd.DataFrame) -> pd.DataFrame:
     output["either_odd_above_30"] = (winner_odds > 30) | (loser_odds > 30)
     output["missing_paired_odds"] = winner_odds.isna() | loser_odds.isna()
     output["suspected_maximum_odds"] = output["odds_source"].astype(str).eq("Maximum")
-    output["suspected_winner_loser_pair_mismatch"] = (
+    output["large_market_reference_disagreement"] = (
         (winner_odds > loser_odds) & output["odds_source"].astype(str).ne("Missing")
     )
+    output["bookmaker_to_bookmaker_disagreement"] = False
     for column in [
         "used_fallback_source",
         "overround_below_1_00",
@@ -180,7 +200,8 @@ def build_odds_quality_rows(raw_rows: pd.DataFrame) -> pd.DataFrame:
         "either_odd_above_30",
         "missing_paired_odds",
         "suspected_maximum_odds",
-        "suspected_winner_loser_pair_mismatch",
+        "large_market_reference_disagreement",
+        "bookmaker_to_bookmaker_disagreement",
     ]:
         output[column] = output[column].fillna(False).astype("bool")
     return output.reset_index(drop=True)
@@ -228,13 +249,194 @@ def write_odds_audit_artifacts(
 ) -> None:
     """Write odds-source audit JSON and Parquet artifacts."""
     for path in paths.__dict__.values():
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
     paths.summary.write_text(
         json.dumps(_jsonable(result.summary.model_dump()), indent=2),
         encoding="utf-8",
     )
     result.quality_rows.to_parquet(paths.quality_rows, index=False)
     result.overround_by_source.to_parquet(paths.overround_by_source, index=False)
+    if paths.side_integrity_summary is not None and result.side_integrity_summary is not None:
+        paths.side_integrity_summary.write_text(
+            json.dumps(_jsonable(result.side_integrity_summary), indent=2),
+            encoding="utf-8",
+        )
+    if paths.side_integrity_rows is not None and result.side_integrity_rows is not None:
+        result.side_integrity_rows.to_parquet(paths.side_integrity_rows, index=False)
+    if paths.manual_review_rows is not None and result.manual_review_rows is not None:
+        result.manual_review_rows.to_csv(paths.manual_review_rows, index=False)
+
+
+def build_odds_side_integrity(
+    frame: pd.DataFrame,
+    *,
+    tolerance: float = 1e-12,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Check direct winner/loser odds to player_1/player_2 mapping invariants."""
+    rows: list[dict[str, Any]] = []
+    summaries: dict[str, Any] = {}
+    for source in ("b365", "ps", "avg", "max"):
+        required = [
+            f"source_winner_{source}_odds",
+            f"source_loser_{source}_odds",
+            f"player_1_{source}_odds",
+            f"player_2_{source}_odds",
+            f"{source}_pair_available",
+        ]
+        if not set(required).issubset(frame.columns):
+            summaries[source] = {
+                "rows_with_valid_source_pair": 0,
+                "rows_with_missing_source_pair": len(frame),
+                "rows_checked_after_canonicalization": 0,
+                "odds_side_mapping_failures": 0,
+                "source_pair_consistency_failures": 0,
+                "maximum_absolute_mapping_difference": None,
+            }
+            continue
+        pair_available = frame[f"{source}_pair_available"].astype(bool)
+        source_pair_present = (
+            frame[f"source_winner_{source}_odds"].notna()
+            & frame[f"source_loser_{source}_odds"].notna()
+        )
+        consistency_failure = pair_available != source_pair_present
+        max_diff = 0.0
+        failures = 0
+        checked = 0
+        for _, row in frame[pair_available].iterrows():
+            player_1_won = bool(row.get("player_1_won", row.get("actual_player_1_won")))
+            expected_p1 = row[f"source_winner_{source}_odds"] if player_1_won else row[
+                f"source_loser_{source}_odds"
+            ]
+            expected_p2 = row[f"source_loser_{source}_odds"] if player_1_won else row[
+                f"source_winner_{source}_odds"
+            ]
+            diff_p1 = abs(float(row[f"player_1_{source}_odds"]) - float(expected_p1))
+            diff_p2 = abs(float(row[f"player_2_{source}_odds"]) - float(expected_p2))
+            max_row_diff = max(diff_p1, diff_p2)
+            failed = max_row_diff > tolerance
+            max_diff = max(max_diff, max_row_diff)
+            checked += 1
+            failures += int(failed)
+            rows.append(
+                {
+                    "match_id": row.get("match_id"),
+                    "match_date": row.get("match_date"),
+                    "source": source,
+                    "rows_checked_after_canonicalization": True,
+                    "odds_side_mapping_failure": failed,
+                    "source_pair_consistency_failure": False,
+                    "maximum_absolute_mapping_difference": max_row_diff,
+                }
+            )
+        for _, row in frame[consistency_failure].iterrows():
+            rows.append(
+                {
+                    "match_id": row.get("match_id"),
+                    "match_date": row.get("match_date"),
+                    "source": source,
+                    "rows_checked_after_canonicalization": False,
+                    "odds_side_mapping_failure": False,
+                    "source_pair_consistency_failure": True,
+                    "maximum_absolute_mapping_difference": None,
+                }
+            )
+        summaries[source] = {
+            "rows_with_valid_source_pair": int(pair_available.sum()),
+            "rows_with_missing_source_pair": int((~pair_available).sum()),
+            "rows_checked_after_canonicalization": checked,
+            "odds_side_mapping_failures": failures,
+            "source_pair_consistency_failures": int(consistency_failure.sum()),
+            "maximum_absolute_mapping_difference": max_diff if checked else None,
+        }
+    return {
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "sources": summaries,
+        "total_odds_side_mapping_failures": sum(
+            int(summary["odds_side_mapping_failures"]) for summary in summaries.values()
+        ),
+    }, pd.DataFrame(rows)
+
+
+def build_manual_review_rows(
+    frame: pd.DataFrame,
+    integrity_rows: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build deterministic manual-review rows for odds-side and source disagreement."""
+    required = {
+        "player_1_b365_odds",
+        "player_2_b365_odds",
+        "player_1_ps_odds",
+        "player_2_ps_odds",
+    }
+    if frame.empty or not required.issubset(frame.columns):
+        return pd.DataFrame()
+    review = frame.copy()
+    review["b365_no_vig_player_1_probability"] = _no_vig_probability(
+        review["player_1_b365_odds"],
+        review["player_2_b365_odds"],
+    )
+    review["ps_no_vig_player_1_probability"] = _no_vig_probability(
+        review["player_1_ps_odds"],
+        review["player_2_ps_odds"],
+    )
+    review["absolute_source_disagreement"] = (
+        review["b365_no_vig_player_1_probability"] - review["ps_no_vig_player_1_probability"]
+    ).abs()
+    review["winner"] = review.apply(
+        lambda row: row["player_1"] if bool(row["player_1_won"]) else row["player_2"],
+        axis=1,
+    )
+    review["loser"] = review.apply(
+        lambda row: row["player_2"] if bool(row["player_1_won"]) else row["player_1"],
+        axis=1,
+    )
+    review["actual_player_1_won"] = review["player_1_won"].astype(bool)
+    old_flag = review["player_1_b365_odds"] > review["player_2_b365_odds"]
+    largest = review.sort_values(
+        ["absolute_source_disagreement", "match_id"],
+        ascending=[False, True],
+        kind="mergesort",
+    ).head(20).assign(review_category="largest_b365_vs_ps_disagreement")
+    flagged = review[old_flag].sort_values("match_id", kind="mergesort").head(20).assign(
+        review_category="market_reference_disagreement"
+    )
+    controls = review[~old_flag].sort_values("match_id", kind="mergesort").head(20).assign(
+        review_category="unflagged_control"
+    )
+    output = pd.concat([largest, flagged, controls], ignore_index=True)
+    columns = [
+        "match_id",
+        "match_date",
+        "tournament",
+        "winner",
+        "loser",
+        "player_1",
+        "player_2",
+        "actual_player_1_won",
+        "source_winner_b365_odds",
+        "source_loser_b365_odds",
+        "player_1_b365_odds",
+        "player_2_b365_odds",
+        "source_winner_ps_odds",
+        "source_loser_ps_odds",
+        "player_1_ps_odds",
+        "player_2_ps_odds",
+        "b365_no_vig_player_1_probability",
+        "ps_no_vig_player_1_probability",
+        "absolute_source_disagreement",
+        "review_category",
+    ]
+    return output[[column for column in columns if column in output.columns]]
+
+
+def _no_vig_probability(player_1_odds: pd.Series, player_2_odds: pd.Series) -> pd.Series:
+    odds_1 = pd.to_numeric(player_1_odds, errors="coerce")
+    odds_2 = pd.to_numeric(player_2_odds, errors="coerce")
+    raw_1 = 1.0 / odds_1
+    raw_2 = 1.0 / odds_2
+    overround = raw_1 + raw_2
+    return raw_1 / overround
 
 
 def _source_odds_columns(raw_input: Path) -> dict[str, list[str]]:
@@ -311,7 +513,8 @@ def _empty_quality_rows() -> pd.DataFrame:
             "either_odd_above_30",
             "missing_paired_odds",
             "suspected_maximum_odds",
-            "suspected_winner_loser_pair_mismatch",
+            "large_market_reference_disagreement",
+            "bookmaker_to_bookmaker_disagreement",
         ]
     )
 
@@ -336,7 +539,9 @@ __all__ = [
     "OddsSourceAuditResult",
     "OddsSourceAuditSummary",
     "audit_odds_sources",
+    "build_manual_review_rows",
     "build_odds_quality_rows",
+    "build_odds_side_integrity",
     "build_overround_by_source",
     "write_odds_audit_artifacts",
 ]

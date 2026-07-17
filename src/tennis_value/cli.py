@@ -85,6 +85,9 @@ DEFAULT_DIAGNOSE_V2_CORRECTION_PLOT = Path("reports/model_v2_correction_performa
 DEFAULT_ODDS_AUDIT_SUMMARY = Path("reports/odds_source_audit.json")
 DEFAULT_ODDS_AUDIT_ROWS = Path("reports/odds_quality_rows.parquet")
 DEFAULT_ODDS_AUDIT_OVERROUND = Path("reports/odds_overround_by_source.parquet")
+DEFAULT_ODDS_SIDE_INTEGRITY_SUMMARY = Path("reports/odds_side_integrity_summary.json")
+DEFAULT_ODDS_SIDE_INTEGRITY_ROWS = Path("reports/odds_side_integrity_rows.parquet")
+DEFAULT_ODDS_SIDE_MANUAL_REVIEW = Path("reports/odds_side_manual_review.csv")
 DEFAULT_MODEL_V2_1_OUTPUT = Path("models/model_v2_1_form_workload.joblib")
 DEFAULT_MODEL_V2_1_METADATA = Path("models/model_v2_1_form_workload_metadata.json")
 DEFAULT_MODEL_V2_1_PREDICTIONS = Path("reports/model_v2_1_predictions.parquet")
@@ -95,6 +98,19 @@ DEFAULT_MODEL_V2_1_ODDS = Path("reports/model_v2_1_odds_sensitivity.parquet")
 DEFAULT_MODEL_V2_1_SUMMARY = Path("reports/model_v2_1_summary.json")
 DEFAULT_MODEL_V2_1_ARCHITECTURE_PLOT = Path("reports/model_v2_1_architecture_comparison.png")
 DEFAULT_MODEL_V2_1_CORRECTION_PLOT = Path("reports/model_v2_1_correction_calibration.png")
+DEFAULT_MARKET_ANCHOR_COVERAGE = Path("reports/market_anchor_coverage.parquet")
+DEFAULT_MARKET_ANCHOR_METRICS = Path("reports/market_anchor_metrics.parquet")
+DEFAULT_MARKET_ANCHOR_COMMON_ROWS = Path("reports/market_anchor_common_rows.parquet")
+DEFAULT_MARKET_ANCHOR_BOOTSTRAP = Path("reports/market_anchor_block_bootstrap.json")
+DEFAULT_MARKET_ANCHOR_SOURCE_DIAGNOSTICS = Path(
+    "reports/market_anchor_source_diagnostics.json"
+)
+DEFAULT_MARKET_ANCHOR_DISAGREEMENT = Path("reports/market_anchor_probability_disagreement.parquet")
+DEFAULT_MARKET_ANCHOR_SUMMARY = Path("reports/market_anchor_benchmark_summary.json")
+DEFAULT_MARKET_ANCHOR_LOG_LOSS_PLOT = Path("reports/market_anchor_log_loss_comparison.png")
+DEFAULT_MARKET_ANCHOR_IMPROVEMENT_PLOT = Path(
+    "reports/market_anchor_improvement_comparison.png"
+)
 
 
 @app.callback()
@@ -877,6 +893,9 @@ def audit_odds(
         summary=DEFAULT_ODDS_AUDIT_SUMMARY,
         quality_rows=DEFAULT_ODDS_AUDIT_ROWS,
         overround_by_source=DEFAULT_ODDS_AUDIT_OVERROUND,
+        side_integrity_summary=DEFAULT_ODDS_SIDE_INTEGRITY_SUMMARY,
+        side_integrity_rows=DEFAULT_ODDS_SIDE_INTEGRITY_ROWS,
+        manual_review_rows=DEFAULT_ODDS_SIDE_MANUAL_REVIEW,
     )
     write_odds_audit_artifacts(result, paths)
     summary = result.summary
@@ -893,9 +912,15 @@ def audit_odds(
             f"{flag}={count}" for flag, count in summary.quality_flag_counts.items()
         )
     )
+    if result.side_integrity_summary is not None:
+        console.print(
+            "Verified odds-side mapping failures: "
+            f"{result.side_integrity_summary['total_odds_side_mapping_failures']}"
+        )
     console.print(f"Summary -> {paths.summary}")
     console.print(f"Quality rows -> {paths.quality_rows}")
     console.print(f"Overround by source -> {paths.overround_by_source}")
+    console.print(f"Side integrity -> {paths.side_integrity_summary}")
 
 
 @app.command("train-v2-1")
@@ -983,6 +1008,91 @@ def train_v2_1(
     console.print(f"Capped rows: {capped} ({capped_rate:.2%})")
     console.print(f"Model -> {paths.model_output}")
     console.print(f"Predictions -> {paths.predictions_output}")
+    console.print(f"Summary -> {paths.summary}")
+
+
+@app.command("benchmark-markets")
+def benchmark_markets(
+    input: Annotated[  # noqa: A002
+        Path,
+        typer.Option("--input", help="Path to model-ready feature Parquet dataset."),
+    ] = DEFAULT_TRAIN_V2_INPUT,
+    bootstrap_samples: Annotated[
+        int,
+        typer.Option("--bootstrap-samples", help="Paired block-bootstrap sample count."),
+    ] = 10_000,
+) -> None:
+    """Benchmark the focused form/workload signal across bookmaker market anchors."""
+    if not input.exists():
+        console.print(f"[red]Input file does not exist: {input}[/red]")
+        raise typer.Exit(code=1)
+
+    from tennis_value.benchmark_markets import (
+        MarketBenchmarkOutputPaths,
+        run_market_benchmark,
+        write_market_benchmark_artifacts,
+    )
+
+    try:
+        result = run_market_benchmark(
+            pd.read_parquet(input),
+            bootstrap_samples=bootstrap_samples,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Market benchmark failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    paths = MarketBenchmarkOutputPaths(
+        coverage=DEFAULT_MARKET_ANCHOR_COVERAGE,
+        metrics=DEFAULT_MARKET_ANCHOR_METRICS,
+        common_rows=DEFAULT_MARKET_ANCHOR_COMMON_ROWS,
+        block_bootstrap=DEFAULT_MARKET_ANCHOR_BOOTSTRAP,
+        source_diagnostics=DEFAULT_MARKET_ANCHOR_SOURCE_DIAGNOSTICS,
+        probability_disagreement=DEFAULT_MARKET_ANCHOR_DISAGREEMENT,
+        summary=DEFAULT_MARKET_ANCHOR_SUMMARY,
+        log_loss_plot=DEFAULT_MARKET_ANCHOR_LOG_LOSS_PLOT,
+        improvement_plot=DEFAULT_MARKET_ANCHOR_IMPROVEMENT_PLOT,
+    )
+    if DEFAULT_ODDS_SIDE_INTEGRITY_SUMMARY.exists():
+        import json
+
+        integrity = json.loads(DEFAULT_ODDS_SIDE_INTEGRITY_SUMMARY.read_text(encoding="utf-8"))
+        result.summary["odds_side_mapping_failures"] = integrity.get(
+            "total_odds_side_mapping_failures"
+        )
+    write_market_benchmark_artifacts(result, paths)
+
+    metrics = result.metrics
+    console.print("source | scope | year | rows | raw market LL | recalibration LL | "
+                  "form/workload LL | improvement vs raw | improvement vs recalibration")
+    for (source, scope, year), group in metrics.groupby(["source", "scope", "segment"], sort=True):
+        if str(year) == "combined_2023_2025":
+            continue
+        raw = group[group["architecture"] == "raw_market"].iloc[0]
+        recal = group[group["architecture"] == "market_recalibration"].iloc[0]
+        form = group[group["architecture"] == "free_form_workload"].iloc[0]
+        console.print(
+            f"{source} | {scope} | {year} | {int(form['sample_count'])} | "
+            f"{_display_metric(raw['log_loss'])} | "
+            f"{_display_metric(recal['log_loss'])} | "
+            f"{_display_metric(form['log_loss'])} | "
+            f"{_display_metric(form['log_loss_improvement_vs_raw_market'])} | "
+            f"{_display_metric(form['log_loss_improvement_vs_recalibration'])}"
+        )
+    console.print("Pooled block-bootstrap intervals:")
+    for source, scopes in result.block_bootstrap["comparisons"].items():
+        for scope, segments in scopes.items():
+            pooled = segments["combined_2023_2025"]
+            raw = pooled["versus_raw_market"]
+            recal = pooled["versus_market_recalibration"]
+            console.print(
+                f"{source} {scope}: vs raw "
+                f"[{_display_metric(raw['log_loss_ci_lower'])}, "
+                f"{_display_metric(raw['log_loss_ci_upper'])}], vs recal "
+                f"[{_display_metric(recal['log_loss_ci_lower'])}, "
+                f"{_display_metric(recal['log_loss_ci_upper'])}]"
+            )
+    console.print(f"Metrics -> {paths.metrics}")
     console.print(f"Summary -> {paths.summary}")
 
 

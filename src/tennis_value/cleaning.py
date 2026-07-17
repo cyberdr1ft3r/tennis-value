@@ -20,6 +20,18 @@ from tennis_value.orientation import (
 )
 
 SUPPORTED_SURFACES = {"Hard", "Clay", "Grass"}
+SOURCE_ODDS_KEYS = ("b365", "ps", "avg", "max")
+SOURCE_ODDS_CANONICAL_COLUMNS = [
+    column
+    for source in SOURCE_ODDS_KEYS
+    for column in (
+        f"source_winner_{source}_odds",
+        f"source_loser_{source}_odds",
+        f"player_1_{source}_odds",
+        f"player_2_{source}_odds",
+        f"{source}_pair_available",
+    )
+]
 CANONICAL_COLUMNS = [
     "match_id",
     "match_date",
@@ -41,6 +53,7 @@ CANONICAL_COLUMNS = [
     "player_1_won",
     "is_retirement",
     "odds_source",
+    *SOURCE_ODDS_CANONICAL_COLUMNS,
     "source_file",
 ]
 DUPLICATE_COMPARE_COLUMNS = [
@@ -265,6 +278,7 @@ def _canonical_row(row: pd.Series, oriented: OrientedPlayers) -> dict[str, Any]:
     best_of = _nullable_int(row.get("best_of")) or 3
     player_1_rank, player_2_rank = _oriented_pair(row, "winner_rank", "loser_rank", oriented)
     player_1_odds, player_2_odds = _oriented_pair(row, "winner_odds", "loser_odds", oriented)
+    source_odds = _source_odds_fields(row, oriented)
 
     match_id = generate_match_id(
         match_date=match_date,
@@ -295,6 +309,7 @@ def _canonical_row(row: pd.Series, oriented: OrientedPlayers) -> dict[str, Any]:
         "player_1_won": oriented.player_1_won,
         "is_retirement": is_retirement(row),
         "odds_source": normalize_text(row.get("odds_source")) or "Missing",
+        **source_odds,
         "source_file": normalize_text(row.get("source_file")) or "",
     }
 
@@ -310,6 +325,20 @@ def _oriented_pair(
     if oriented.swapped:
         return loser_value, winner_value
     return winner_value, loser_value
+
+
+def _source_odds_fields(row: pd.Series, oriented: OrientedPlayers) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for source in SOURCE_ODDS_KEYS:
+        winner_field = f"winner_{source}_odds"
+        loser_field = f"loser_{source}_odds"
+        player_1, player_2 = _oriented_pair(row, winner_field, loser_field, oriented)
+        fields[f"source_winner_{source}_odds"] = row.get(winner_field)
+        fields[f"source_loser_{source}_odds"] = row.get(loser_field)
+        fields[f"player_1_{source}_odds"] = player_1
+        fields[f"player_2_{source}_odds"] = player_2
+        fields[f"{source}_pair_available"] = bool(row.get(f"{source}_pair_available", False))
+    return fields
 
 
 def _handle_duplicates(canonical: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
@@ -467,6 +496,15 @@ def _coerce_canonical_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
     coerced["player_2_odds"] = (
         pd.to_numeric(coerced["player_2_odds"], errors="coerce").astype("Float64")
     )
+    for source in SOURCE_ODDS_KEYS:
+        for column in (
+            f"source_winner_{source}_odds",
+            f"source_loser_{source}_odds",
+            f"player_1_{source}_odds",
+            f"player_2_{source}_odds",
+        ):
+            coerced[column] = pd.to_numeric(coerced[column], errors="coerce").astype("Float64")
+        coerced[f"{source}_pair_available"] = coerced[f"{source}_pair_available"].astype("bool")
     coerced["player_1_won"] = coerced["player_1_won"].astype("bool")
     coerced["is_retirement"] = coerced["is_retirement"].astype("bool")
     text_columns = [
@@ -480,6 +518,7 @@ def _coerce_canonical_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
             "player_2_rank",
             "player_1_odds",
             "player_2_odds",
+            *SOURCE_ODDS_CANONICAL_COLUMNS,
             "player_1_won",
             "is_retirement",
         }

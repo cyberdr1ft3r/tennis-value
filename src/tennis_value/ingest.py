@@ -83,6 +83,26 @@ DEFAULT_ODDS_PAIRS: tuple[tuple[str, str, OddsSource], ...] = (
     ("B365W", "B365L", "B365"),
     ("AvgW", "AvgL", "Average"),
 )
+SOURCE_ODDS_PAIRS: dict[str, tuple[str, str]] = {
+    "b365": ("B365W", "B365L"),
+    "ps": ("PSW", "PSL"),
+    "avg": ("AvgW", "AvgL"),
+    "max": ("MaxW", "MaxL"),
+}
+SOURCE_ODDS_OUTPUT_COLUMNS = [
+    "winner_b365_odds",
+    "loser_b365_odds",
+    "b365_pair_available",
+    "winner_ps_odds",
+    "loser_ps_odds",
+    "ps_pair_available",
+    "winner_avg_odds",
+    "loser_avg_odds",
+    "avg_pair_available",
+    "winner_max_odds",
+    "loser_max_odds",
+    "max_pair_available",
+]
 
 OUTPUT_COLUMNS = [
     "match_date",
@@ -97,6 +117,7 @@ OUTPUT_COLUMNS = [
     "winner_odds",
     "loser_odds",
     "odds_source",
+    *SOURCE_ODDS_OUTPUT_COLUMNS,
     "status_or_comment",
     "source_file",
 ]
@@ -240,6 +261,19 @@ def _map_source_frame(
     output["winner_odds"] = odds.map(lambda value: value[0])
     output["loser_odds"] = odds.map(lambda value: value[1])
     output["odds_source"] = odds.map(lambda value: value[2])
+    for source_key, (winner_column, loser_column) in SOURCE_ODDS_PAIRS.items():
+        source_odds = source.apply(
+            lambda row, winner=winner_column, loser=loser_column: _select_source_pair(
+                row,
+                column_lookup,
+                winner,
+                loser,
+            ),
+            axis=1,
+        )
+        output[f"winner_{source_key}_odds"] = source_odds.map(lambda value: value[0])
+        output[f"loser_{source_key}_odds"] = source_odds.map(lambda value: value[1])
+        output[f"{source_key}_pair_available"] = source_odds.map(lambda value: value[2])
 
     output["winner_odds"] = _parse_decimal_odds(output["winner_odds"])
     output["loser_odds"] = _parse_decimal_odds(output["loser_odds"])
@@ -291,6 +325,25 @@ def _select_odds(
         if winner_odds is not None and loser_odds is not None:
             return winner_odds, loser_odds, source_name
     return pd.NA, pd.NA, "Missing"
+
+
+def _select_source_pair(
+    row: pd.Series,
+    column_lookup: dict[str, str],
+    winner_column: str,
+    loser_column: str,
+) -> tuple[Any, Any, bool]:
+    winner_source = column_lookup.get(_normalize_column_name(winner_column))
+    loser_source = column_lookup.get(_normalize_column_name(loser_column))
+    winner_odds = (
+        _parse_single_decimal_odds(row[winner_source]) if winner_source is not None else None
+    )
+    loser_odds = _parse_single_decimal_odds(row[loser_source]) if loser_source is not None else None
+    return (
+        winner_odds if winner_odds is not None else pd.NA,
+        loser_odds if loser_odds is not None else pd.NA,
+        winner_odds is not None and loser_odds is not None,
+    )
 
 
 def _parse_date(value: Any) -> pd.Timestamp | None:
@@ -388,6 +441,13 @@ def _coerce_output_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
     coerced["loser_odds"] = (
         pd.to_numeric(coerced["loser_odds"], errors="coerce").astype("Float64")
     )
+    for source_key in SOURCE_ODDS_PAIRS:
+        for side in ("winner", "loser"):
+            column = f"{side}_{source_key}_odds"
+            coerced[column] = pd.to_numeric(coerced[column], errors="coerce").astype("Float64")
+        coerced[f"{source_key}_pair_available"] = coerced[f"{source_key}_pair_available"].astype(
+            "bool"
+        )
     text_columns = [
         "tournament",
         "surface",
@@ -422,6 +482,8 @@ __all__ = [
     "IngestionReport",
     "IngestionResult",
     "OUTPUT_COLUMNS",
+    "SOURCE_ODDS_OUTPUT_COLUMNS",
+    "SOURCE_ODDS_PAIRS",
     "SUPPORTED_EXTENSIONS",
     "discover_tennis_data_files",
     "ingest_tennis_data",

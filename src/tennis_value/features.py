@@ -17,6 +17,7 @@ SUPPORTED_SURFACES = {"Hard", "Clay", "Grass"}
 RETAINED_COLUMNS = [
     "match_id",
     "match_date",
+    "tournament",
     "surface",
     "player_1",
     "player_2",
@@ -24,6 +25,17 @@ RETAINED_COLUMNS = [
     "player_1_odds",
     "player_2_odds",
     "is_retirement",
+]
+SOURCE_ODDS_CONTEXT_COLUMNS = [
+    column
+    for source in ("b365", "ps", "avg", "max")
+    for column in (
+        f"source_winner_{source}_odds",
+        f"source_loser_{source}_odds",
+        f"player_1_{source}_odds",
+        f"player_2_{source}_odds",
+        f"{source}_pair_available",
+    )
 ]
 MODEL_FEATURE_COLUMNS = [
     "overall_elo_diff",
@@ -56,7 +68,12 @@ OPTIONAL_CONTEXT_COLUMNS = [
     "player_2_surface_history_count",
     "surface_history_count_min",
 ]
-FEATURE_OUTPUT_COLUMNS = RETAINED_COLUMNS + MODEL_FEATURE_COLUMNS + OPTIONAL_CONTEXT_COLUMNS
+FEATURE_OUTPUT_COLUMNS = (
+    RETAINED_COLUMNS
+    + SOURCE_ODDS_CONTEXT_COLUMNS
+    + MODEL_FEATURE_COLUMNS
+    + OPTIONAL_CONTEXT_COLUMNS
+)
 REQUIRED_COLUMNS = (
     "match_id",
     "match_date",
@@ -129,6 +146,9 @@ def build_feature_dataset(
     )
     enriched["surface_clay"] = (enriched["surface"].astype(str) == "Clay").astype("int64")
     enriched["surface_grass"] = (enriched["surface"].astype(str) == "Grass").astype("int64")
+    for column in SOURCE_ODDS_CONTEXT_COLUMNS:
+        if column not in enriched:
+            enriched[column] = False if column.endswith("_pair_available") else pd.NA
 
     feature_rows = enriched.sort_values(SORT_COLUMNS, kind="mergesort").reset_index(drop=True)
     feature_rows = feature_rows[FEATURE_OUTPUT_COLUMNS].copy()
@@ -286,6 +306,12 @@ def _coerce_feature_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
         "player_1_days_since_last_match",
         "player_2_days_since_last_match",
     ]
+    source_float_columns = [
+        column for column in SOURCE_ODDS_CONTEXT_COLUMNS if not column.endswith("_pair_available")
+    ]
+    source_bool_columns = [
+        column for column in SOURCE_ODDS_CONTEXT_COLUMNS if column.endswith("_pair_available")
+    ]
     int_columns = [
         "matches_last_14d_diff",
         "history_count_min",
@@ -302,8 +328,10 @@ def _coerce_feature_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
         "player_2_surface_history_count",
         "surface_history_count_min",
     ]
-    for column in float_columns:
+    for column in float_columns + source_float_columns:
         coerced[column] = pd.to_numeric(coerced[column], errors="coerce").astype("Float64")
+    for column in source_bool_columns:
+        coerced[column] = coerced[column].fillna(False).astype("bool")
     for column in int_columns:
         coerced[column] = pd.to_numeric(coerced[column], errors="raise").astype("int64")
     return coerced
@@ -338,6 +366,7 @@ def _date_to_string(value: Any) -> str | None:
 __all__ = [
     "FEATURE_OUTPUT_COLUMNS",
     "MODEL_FEATURE_COLUMNS",
+    "SOURCE_ODDS_CONTEXT_COLUMNS",
     "FeatureQualityReport",
     "FeatureResult",
     "build_feature_dataset",

@@ -59,7 +59,7 @@ def test_odds_quality_flags_and_source_pair_consistency() -> None:
     assert bool(rows.loc[1, "used_fallback_source"])
     assert bool(rows.loc[1, "either_odd_below_1_02"])
     assert bool(rows.loc[1, "either_odd_above_30"])
-    assert bool(rows.loc[1, "suspected_winner_loser_pair_mismatch"])
+    assert bool(rows.loc[1, "large_market_reference_disagreement"])
 
 
 def test_audit_identifies_current_source_columns_and_fallback_policy(tmp_path: Path) -> None:
